@@ -214,15 +214,30 @@ fn live_input(ui: &mut Ui, c: &Connected, st: &mut UiState) {
         ui.horizontal(|ui| {
             for (label, pos) in [(t("left-stick"), inp.left), (t("right-stick"), inp.right)] {
                 ui.vertical(|ui| {
+                    // Fixed width + sign-padded numbers: nothing shifts as
+                    // the values change.
+                    ui.set_width(136.0);
                     stick_view(ui, pos, 128.0);
-                    caption(ui, format!("{label} · {:.2}, {:.2}", pos.0, pos.1));
+                    caption(ui, label);
+                    ui.label(
+                        RichText::new(format!("{:+.2} {:+.2}", pos.0, pos.1))
+                            .monospace()
+                            .size(11.0)
+                            .color(MUTED),
+                    );
                 });
             }
             ui.add_space(12.0);
             for (label, v) in [("LT", inp.lt), ("RT", inp.rt)] {
                 ui.vertical(|ui| {
+                    ui.set_width(44.0);
                     trigger_bar(ui, v, 110.0);
-                    caption(ui, format!("{label} {v}"));
+                    ui.label(
+                        RichText::new(format!("{label} {v:>3}"))
+                            .monospace()
+                            .size(11.0)
+                            .color(MUTED),
+                    );
                 });
             }
         });
@@ -279,15 +294,17 @@ fn live_input(ui: &mut Ui, c: &Connected, st: &mut UiState) {
                             ui.label(RichText::new(format!("{v:>6}")).monospace().color(MUTED));
                         });
                     }
-                    caption(
-                        ui,
-                        format!(
+                    ui.label(
+                        RichText::new(format!(
                             "{} {:>6} {:>6} {:>6}",
                             t("motion-accel"),
                             m.accel[0],
                             m.accel[1],
                             m.accel[2]
-                        ),
+                        ))
+                        .monospace()
+                        .size(11.0)
+                        .color(MUTED),
                     );
                 });
             });
