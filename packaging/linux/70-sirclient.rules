@@ -7,3 +7,6 @@
 KERNEL=="hidraw*", ATTRS{idVendor}=="3537", MODE="0660", GROUP="input", TAG+="uaccess"
 # Bluetooth connections
 KERNEL=="hidraw*", KERNELS=="*:3537:*", MODE="0660", GROUP="input", TAG+="uaccess"
+# Xbox-edition controllers (GIP, e.g. G7 Pro XBox 3537:10BA / dongle 10BB) are
+# configured over raw USB, so the USB device node needs the same access.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3537", MODE="0660", GROUP="input", TAG+="uaccess"
