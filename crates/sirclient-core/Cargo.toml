@@ -16,5 +16,16 @@ thiserror.workspace = true
 log.workspace = true
 rusb.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Foundation",
+    "Gaming_Input",
+    "Gaming_Input_Custom",
+    "System",
+    "Win32_Foundation",
+    "Win32_System_WinRT",
+] }
+windows-core = "0.62"
+
 [dev-dependencies]
 env_logger.workspace = true

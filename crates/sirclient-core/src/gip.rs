@@ -66,14 +66,22 @@ pub fn decode_reply(packet: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let len = (packet[3] as usize).min(packet.len() - 4);
-    let payload = &packet[4..4 + len];
-    if payload.first() == Some(&STATE_STREAM) {
-        return Some(payload.to_vec());
+    reply_from_payload(&packet[4..4 + len])
+}
+
+/// Turn the payload of a GIP reply message (`0x10`) into what the session
+/// parses: the state stream as is, anything else as a HID-style report.
+pub fn reply_from_payload(payload: &[u8]) -> Option<Vec<u8>> {
+    match payload.first() {
+        None => None,
+        Some(&STATE_STREAM) => Some(payload.to_vec()),
+        Some(_) => {
+            let mut out = Vec::with_capacity(1 + payload.len());
+            out.push(MSG_REPLY);
+            out.extend_from_slice(payload);
+            Some(out)
+        }
     }
-    let mut out = Vec::with_capacity(1 + len);
-    out.push(MSG_REPLY);
-    out.extend_from_slice(payload);
-    Some(out)
 }
 
 /// GIP rumble (message `0x09`): grip motors and trigger motors, each
@@ -95,6 +103,15 @@ pub fn rumble(left: u8, right: u8, lt: u8, rt: u8, seq: u8) -> [u8; 13] {
         0x00,
         0x00,
     ]
+}
+
+/// The 8K's vibrate command becomes a standard GIP rumble message.
+fn rumble_for(report: &[u8], seq: u8) -> Option<[u8; 13]> {
+    if report.get(1) != Some(&crate::protocol::g7pro::commands::cmd::VIBRATE) {
+        return None;
+    }
+    let at = |i: usize| report.get(i).copied().unwrap_or(0);
+    Some(rumble(at(4), at(5), at(6), at(7), seq))
 }
 
 /// GIP acknowledgement for a packet that asked for one (flag `0x10`).
@@ -160,7 +177,7 @@ mod usb {
     }
 
     /// GIP-mode GameSir devices, as entries for the device list.
-    pub fn enumerate() -> Vec<HidInfo> {
+    pub(super) fn enumerate() -> Vec<HidInfo> {
         let Some(Ok(list)) = ctx().map(|c| c.devices()) else {
             return vec![];
         };
@@ -205,17 +222,17 @@ mod usb {
         Ok(false)
     }
 
-    pub struct GipLink {
+    pub struct UsbGipLink {
         handle: DeviceHandle<Context>,
         reattach: bool,
         seq: u8,
         path: String,
     }
 
-    impl GipLink {
+    impl UsbGipLink {
         /// Open the first G7 Pro XBox in GIP mode, resetting it out of the
         /// HID fallback first if that is how it is connected.
-        pub fn open() -> Result<GipLink, Error> {
+        pub fn open() -> Result<UsbGipLink, Error> {
             if find(&GIP_PIDS).is_none() {
                 reset_hid_fallback(Duration::from_secs(5))?;
             }
@@ -253,7 +270,7 @@ mod usb {
             // it on close so the gamepad works again.
             let needs_power_on = !reattach;
             let reattach = reattach || cfg!(target_os = "linux");
-            let mut link = GipLink {
+            let mut link = UsbGipLink {
                 handle,
                 reattach,
                 seq: 0,
@@ -289,13 +306,12 @@ mod usb {
         }
     }
 
-    impl Link for GipLink {
+    impl Link for UsbGipLink {
         fn write(&mut self, report: &[u8]) -> Result<(), Error> {
             let seq = self.next_seq();
             // The 8K's vibrate command becomes a standard GIP rumble.
-            if report.get(1) == Some(&crate::protocol::g7pro::commands::cmd::VIBRATE) {
-                let at = |i: usize| report.get(i).copied().unwrap_or(0);
-                return self.raw_write(&rumble(at(4), at(5), at(6), at(7), seq));
+            if let Some(r) = rumble_for(report, seq) {
+                return self.raw_write(&r);
             }
             self.raw_write(&encode_command(report, seq))
         }
@@ -332,7 +348,7 @@ mod usb {
         }
     }
 
-    impl Drop for GipLink {
+    impl Drop for UsbGipLink {
         fn drop(&mut self) {
             let _ = self.handle.release_interface(IFACE);
             if self.reattach {
@@ -342,7 +358,83 @@ mod usb {
     }
 }
 
-pub use usb::{GipLink, enumerate, reset_hid_fallback};
+pub use usb::{UsbGipLink, reset_hid_fallback};
+
+#[cfg(windows)]
+#[path = "gip_winrt.rs"]
+mod winrt;
+
+/// GIP-mode G7 Pro XBox controllers, as entries for the device list.
+pub fn enumerate() -> Vec<HidInfo> {
+    #[allow(unused_mut)]
+    let mut out = usb::enumerate();
+    #[cfg(windows)]
+    for d in winrt::enumerate() {
+        if !out.iter().any(|u| u.pid == d.pid) {
+            out.push(d);
+        }
+    }
+    out
+}
+
+/// Configuration link to a G7 Pro XBox, whichever way this OS reaches it.
+pub struct GipLink {
+    inner: Box<dyn crate::session::Link>,
+    path: String,
+}
+
+impl GipLink {
+    /// Open the first G7 Pro XBox.
+    ///
+    /// Linux and macOS use raw USB. Windows goes through the system GIP
+    /// stack (`Windows.Gaming.Input.Custom`), as GameSir Nexus does, and
+    /// falls back to raw USB for a pad bound to WinUSB.
+    pub fn open() -> Result<GipLink, crate::Error> {
+        #[cfg(windows)]
+        {
+            match winrt::WinGipLink::open(std::time::Duration::from_secs(3)) {
+                Ok(Some(l)) => {
+                    let path = l.path().to_string();
+                    return Ok(GipLink {
+                        inner: Box::new(l),
+                        path,
+                    });
+                }
+                Ok(None) => log::info!("Windows GIP stack reported no G7 Pro XBox"),
+                Err(e) if usb::enumerate().is_empty() => return Err(e),
+                Err(e) => log::warn!("{e}; trying raw USB"),
+            }
+        }
+        let l = UsbGipLink::open()?;
+        let path = l.path().to_string();
+        Ok(GipLink {
+            inner: Box::new(l),
+            path,
+        })
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+}
+
+impl crate::session::Link for GipLink {
+    fn write(&mut self, report: &[u8]) -> Result<(), crate::Error> {
+        self.inner.write(report)
+    }
+    fn read(&mut self, buf: &mut [u8], timeout_ms: i32) -> Result<usize, crate::Error> {
+        self.inner.read(buf, timeout_ms)
+    }
+    fn config_report_ids(&self) -> Option<Vec<u8>> {
+        self.inner.config_report_ids()
+    }
+    fn geometry(&self) -> crate::protocol::g7pro::commands::Geometry {
+        self.inner.geometry()
+    }
+    fn has_config(&self) -> bool {
+        self.inner.has_config()
+    }
+}
 
 #[cfg(test)]
 mod tests {

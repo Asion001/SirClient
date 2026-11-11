@@ -65,3 +65,30 @@ settings, and checked against 30 logged profiles.
 Live state arrives as reply type `E0`: the 8K state report with the battery,
 active light animation and zone colours moved up (bytes 28–45) and the
 physical inputs at 49.
+
+## Reaching the pad on each OS
+
+* **Linux:** raw USB with libusb. `xpad` is detached from interface 0 while
+  SirClient holds it. Endpoints `0x02` out and `0x82` in.
+* **macOS:** the same libusb path. No system driver binds the GIP
+  interface, so SirClient also sends the GIP power-on
+  (`05 20 seq 01 00`) that `xpad` would otherwise have sent.
+* **Windows:** `xboxgip.sys` owns the pad, so it can't be opened directly.
+  Nexus ships a small WinRT component (`D4XGaming.Devices.dll`) that calls
+  `GameControllerFactoryManager.RegisterCustomFactoryForGipInterface` for
+  three GIP interface GUIDs:
+
+  ```
+  082E402C-07DF-45E1-A5AB-A3127AF197B5
+  332054CC-A34B-41D5-A34A-A6A6711EC4B3
+  B8F31FE7-7386-40E9-A9F8-2F21263ACFB7
+  ```
+
+  Windows then gives the factory a `GipGameControllerProvider` per pad.
+  Commands go out as `SendMessage(GipMessageClass.Command, 0x0F, payload)`
+  (the driver adds the GIP header), and replies arrive at the object the
+  factory returned, through `IGipGameControllerInputSink.OnMessageReceived`
+  (message `0x10`, payload only). SirClient does the same from Rust
+  (`gip_winrt.rs`), falling back to libusb if the pad is bound to WinUSB.
+  In Nexus logs the pad first shows up as XInput `0x100A` and moves to
+  `0x10BB` once Nexus asks the user to press a button to enter app mode.
