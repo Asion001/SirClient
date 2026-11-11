@@ -20,8 +20,7 @@
 //! While SirClient holds the interface, `xpad` is detached, so the pad does
 //! not work as a gamepad; it is reattached when the link is dropped.
 
-use crate::Error;
-use crate::transport::{Bus, HidInfo};
+use crate::transport::HidInfo;
 
 /// Product IDs of the G7 Pro XBox in GIP (app) mode.
 pub const GIP_PIDS: [u16; 2] = [0x10BA, 0x10BB];
@@ -76,6 +75,7 @@ pub fn decode_reply(packet: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// GIP acknowledgement for a packet that asked for one (flag `0x10`).
+#[cfg(any(target_os = "linux", test))]
 fn ack_for(packet: &[u8]) -> Option<[u8; 13]> {
     if packet.len() < 4 || packet[1] & 0x10 == 0 {
         return None;
@@ -92,9 +92,11 @@ mod imp {
     use rusb::{DeviceHandle, GlobalContext, UsbContext};
 
     use super::*;
+    use crate::Error;
     use crate::protocol::g7pro::commands::Geometry;
     use crate::registry::GAMESIR_VID;
     use crate::session::Link;
+    use crate::transport::Bus;
 
     const IFACE: u8 = 0;
     const EP_OUT: u8 = 0x02;
