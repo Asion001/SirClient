@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use egui::{RichText, Ui};
 use fluent_bundle::FluentValue;
 use sirclient_core::mock::{MOCK_PATH, MockG7};
+use sirclient_core::protocol::g7pro::xbox::XboxLight;
 use sirclient_core::protocol::g7pro::{LightProfile, Profile, Slot, State};
 use sirclient_core::registry::{Connection, Protocol};
 use sirclient_core::session::{Event, Request, Session};
@@ -38,12 +39,14 @@ pub struct Connected {
     /// Working copies being edited.
     pub profiles: HashMap<Slot, Profile>,
     pub light: Option<LightProfile>,
+    /// Lighting slot of the G7 Pro XBox (a different model from the 8K's).
+    pub xlight: Option<XboxLight>,
     pub current_profile: u8,
     pub state: Option<State>,
     pub pending: usize,
     pub connected_at: Instant,
-    /// G7 Pro XBox over GIP: profile layout not mapped yet, so only the
-    /// overview (firmware, active profile) is available.
+    /// G7 Pro XBox over GIP: no macros, its own lighting model and report
+    /// rates.
     pub xbox: bool,
 }
 
@@ -68,6 +71,11 @@ impl Connected {
         {
             out.push(Slot::Light);
         }
+        if let (Some(l), Some(b)) = (&self.xlight, self.loaded.get(&Slot::Light))
+            && *b != l.to_bytes()
+        {
+            out.push(Slot::Light);
+        }
         out.sort_by_key(|s| s.number());
         out
     }
@@ -75,6 +83,7 @@ impl Connected {
     pub fn apply(&mut self) {
         for slot in self.dirty_slots() {
             let bytes = match slot {
+                Slot::Light if self.xbox => self.xlight.as_ref().map(|l| l.to_bytes()),
                 Slot::Light => self.light.as_ref().map(|l| l.to_bytes()),
                 s => self.profiles.get(&s).map(|p| p.to_bytes()),
             };
@@ -88,6 +97,7 @@ impl Connected {
     pub fn revert(&mut self) {
         for (slot, bytes) in &self.loaded {
             match slot {
+                Slot::Light if self.xbox => self.xlight = XboxLight::from_bytes(bytes).ok(),
                 Slot::Light => self.light = LightProfile::from_bytes(bytes).ok(),
                 s => {
                     if let Ok(p) = Profile::from_bytes(bytes) {
@@ -105,6 +115,7 @@ impl Connected {
             return;
         }
         match slot {
+            Slot::Light if self.xbox => self.xlight = XboxLight::from_bytes(&bytes).ok(),
             Slot::Light => self.light = LightProfile::from_bytes(&bytes).ok(),
             s => {
                 if let Ok(p) = Profile::from_bytes(&bytes) {
@@ -158,6 +169,8 @@ pub struct UiState {
     pub sticks_tab: usize,
     pub motion_tab: usize,
     pub light_preset: usize,
+    /// Keyframe being edited on the G7 Pro XBox lighting page.
+    pub light_frame: usize,
     pub calib_open: bool,
     pub controllers_only: bool,
     /// Show VID/PID, usage pages and raw reports on the devices page.
@@ -194,6 +207,7 @@ impl App {
                 sticks_tab: 0,
                 motion_tab: 0,
                 light_preset: 0,
+                light_frame: 0,
                 calib_open: false,
                 controllers_only: true,
                 show_tech: false,
@@ -250,6 +264,7 @@ impl App {
             loaded: HashMap::new(),
             profiles: HashMap::new(),
             light: None,
+            xlight: None,
             current_profile: 1,
             state: None,
             pending: 0,
@@ -371,13 +386,7 @@ impl App {
                 let supported: Vec<HidInfo> = self
                     .config_devices()
                     .into_iter()
-                    // The XBox edition stops working as a gamepad while connected,
-                    // so it is only connected on request.
-                    .filter(|d| {
-                        d.model().is_some_and(|(m, _)| {
-                            m.protocol.is_implemented() && m.protocol != Protocol::G7ProXbox
-                        })
-                    })
+                    .filter(|d| d.model().is_some_and(|(m, _)| m.protocol.is_implemented()))
                     .collect();
                 if let Some(d) = supported.first() {
                     let d = d.clone();
@@ -944,10 +953,6 @@ impl eframe::App for App {
                                 }
                                 return;
                             }
-                            if c.xbox && page != Page::Overview {
-                                pages::xbox_notice(ui);
-                                return;
-                            }
                             match page {
                                 Page::Overview => {
                                     pages::overview::show(ui, c, self.edit_slot, &mut self.ui)
@@ -957,6 +962,9 @@ impl eframe::App for App {
                                 }
                                 Page::Sticks => {
                                     pages::sticks::show(ui, c, self.edit_slot, &mut self.ui)
+                                }
+                                Page::Lighting if c.xbox => {
+                                    pages::xbox_lighting::show(ui, c, &mut self.ui)
                                 }
                                 Page::Lighting => pages::lighting::show(ui, c, &mut self.ui),
                                 Page::Devices => unreachable!(),

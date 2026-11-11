@@ -17,6 +17,7 @@ use crate::protocol::g7pro::commands::{
     self, CURRENT_PROFILE_MARKER, CalibrationPart, Geometry, Nudge, Reply, Slot, StickSide, cmd,
 };
 use crate::protocol::g7pro::state::State;
+use crate::protocol::g7pro::xbox;
 use crate::transport::{REPORT_LEN, pad_report};
 
 const RESEND_AFTER: Duration = Duration::from_millis(200);
@@ -240,6 +241,33 @@ impl Worker {
         }
     }
 
+    /// The UI edits profiles in the 8K layout; the XBox edition stores a
+    /// compact one (see [`xbox`]). Lighting slots pass through as they are.
+    fn to_ui(&self, slot: Slot, bytes: Vec<u8>) -> Option<Vec<u8>> {
+        if self.geo != Geometry::GIP || slot == Slot::Light {
+            return Some(bytes);
+        }
+        match xbox::profile_to_8k(&bytes) {
+            Ok(k) => Some(k),
+            Err(e) => {
+                log::warn!("{}: {e}", slot.label());
+                None
+            }
+        }
+    }
+
+    fn to_device(&self, slot: Slot, bytes: Vec<u8>) -> Result<Vec<u8>, Error> {
+        if self.geo != Geometry::GIP || slot == Slot::Light {
+            return Ok(bytes);
+        }
+        let base = self
+            .cache
+            .get(&slot.number())
+            .cloned()
+            .unwrap_or_else(|| vec![0; xbox::PROFILE_LEN]);
+        xbox::profile_from_8k(&bytes, &base)
+    }
+
     fn emit(&self, e: Event) {
         let _ = self.ev.send(e);
         (self.notify)();
@@ -263,6 +291,13 @@ impl Worker {
                 self.enqueue(commands::read_current_profile());
             }
             Request::WriteSlot(slot, new) => {
+                let new = match self.to_device(slot, new) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        self.emit(Event::Warning(format!("{}: {e}", slot.label())));
+                        return true;
+                    }
+                };
                 let slot_len = self.geo.slot_len(slot);
                 if new.len() != slot_len {
                     self.emit(Event::Warning(format!(
@@ -493,14 +528,18 @@ impl Worker {
             if self.refresh_end.get(&slot_no) == Some(&end) {
                 self.refresh_end.remove(&slot_no);
                 let bytes = cached.clone();
-                self.emit(Event::SlotChanged(slot, bytes));
+                if let Some(bytes) = self.to_ui(slot, bytes) {
+                    self.emit(Event::SlotChanged(slot, bytes));
+                }
             }
         } else if let Some(buf) = self.loading.get_mut(&slot_no) {
             buf[offset..end].copy_from_slice(data);
             if end == slot_len {
                 let bytes = self.loading.remove(&slot_no).unwrap();
                 self.cache.insert(slot_no, bytes.clone());
-                self.emit(Event::SlotLoaded(slot, bytes));
+                if let Some(bytes) = self.to_ui(slot, bytes) {
+                    self.emit(Event::SlotLoaded(slot, bytes));
+                }
             }
         }
     }

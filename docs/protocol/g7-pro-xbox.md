@@ -56,8 +56,12 @@ the motor test).
 ## Slots
 
 Slots are numbered as on the 8K: profiles 1–4, Shift `5`, Light `0x20`.
-Profiles are 480 bytes and the light slot is 511 bytes. The profile looks
-like a compact 8K profile (name 32, function data 32, 16 basic buttons ×7,
-four back buttons ×7 with no macros, triggers, sticks, motion). Mapping it
-field by field is still to do; Nexus logs dump each raw profile next to the
-parsed JSON, which is a good source.
+Profiles are 480 bytes and the light slot is 511 bytes. The full layout and
+its translation to the 8K profile live in
+[`xbox.rs`](../../crates/sirclient-core/src/protocol/g7pro/xbox.rs); it was
+mapped from Nexus logs, which print each raw slot next to the decoded
+settings, and checked against 30 logged profiles.
+
+Live state arrives as reply type `E0`: the 8K state report with the battery,
+active light animation and zone colours moved up (bytes 28–45) and the
+physical inputs at 49.

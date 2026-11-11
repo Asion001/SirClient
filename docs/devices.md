@@ -32,8 +32,9 @@ G7 Pro command set through GIP message `0x0F`; see
 to it over raw USB (detaching `xpad` while connected). When the dongle has
 dropped to its plain-HID fallback (`0x1022`, whose `0xFFF0` collection does
 not answer), SirClient resets the USB port to bring it back to GIP mode.
-Reading firmware and profiles and switching the active profile work; the
-editors are disabled until the 480-byte profile layout is mapped.
+All editors work: SirClient translates the XBox's 480-byte profiles to and
+from the 8K layout the UI edits (no macros on this model), and has its own
+page for the XBox's keyframe lighting.
 
 Several product IDs per model are colour or collaboration editions
 (Gold, Crown, Nioh, NBA 2K and so on). Their protocol is identical.

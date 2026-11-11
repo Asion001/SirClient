@@ -3,6 +3,7 @@ pub mod devices;
 pub mod lighting;
 pub mod overview;
 pub mod sticks;
+pub mod xbox_lighting;
 
 use egui::{RichText, Ui};
 
@@ -14,16 +15,6 @@ pub fn empty_state(ui: &mut Ui) {
         ui.set_width(ui.available_width());
         ui.label(RichText::new(t("empty-title")).size(16.0).strong());
         ui.label(RichText::new(t("empty-body")).color(MUTED));
-    });
-}
-
-/// Shown on editing pages for the G7 Pro XBox, whose profile layout
-/// differs from the G7 Pro 8K and is not mapped yet.
-pub fn xbox_notice(ui: &mut Ui) {
-    card().show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.label(RichText::new(t("xbox-notice-title")).size(16.0).strong());
-        ui.label(RichText::new(t("xbox-notice-body")).color(MUTED));
     });
 }
 

@@ -6,6 +6,7 @@ pub mod keys;
 pub mod light;
 pub mod profile;
 pub mod state;
+pub mod xbox;
 
 pub use commands::{Reply, Slot};
 pub use light::LightProfile;

@@ -73,6 +73,7 @@ fn turbo_cell(ui: &mut Ui, enabled: &mut u8, speed: &mut u8) {
 }
 
 pub fn show(ui: &mut Ui, c: &mut Connected, slot: Slot, st: &mut UiState) {
+    let xbox = c.xbox;
     let Some(p) = c.profiles.get_mut(&slot) else {
         return;
     };
@@ -132,12 +133,17 @@ pub fn show(ui: &mut Ui, c: &mut Connected, slot: Slot, st: &mut UiState) {
                     });
             });
         } else {
-            back_buttons(ui, p, st);
+            back_buttons(ui, p, st, xbox);
         }
     });
 }
 
-fn back_buttons(ui: &mut Ui, p: &mut sirclient_core::protocol::g7pro::Profile, st: &mut UiState) {
+fn back_buttons(
+    ui: &mut Ui,
+    p: &mut sirclient_core::protocol::g7pro::Profile,
+    st: &mut UiState,
+    xbox: bool,
+) {
     card().show(ui, |ui| {
         ui.set_width(ui.available_width());
         heading(ui, t("back-buttons"));
@@ -150,27 +156,30 @@ fn back_buttons(ui: &mut Ui, p: &mut sirclient_core::protocol::g7pro::Profile, s
         });
         let bb = &mut p.back_buttons[st.back_tab];
         let id = BACK_BUTTONS[st.back_tab];
-        let mut is_macro = bb.macro_.flags & Macro::ENABLED != 0;
-        ui.horizontal(|ui| {
-            if ui.radio(!is_macro, t("action-single")).clicked() {
-                is_macro = false;
-                bb.macro_.flags &= !Macro::ENABLED;
-            }
-            if ui.radio(is_macro, t("action-macro")).clicked() {
-                is_macro = true;
-                bb.button.map.enabled = 0;
-                if bb.macro_.step_count == 0 {
-                    bb.macro_.step_count = 1;
-                    bb.macro_.steps.resize(MACRO_STEPS, MacroStep::default());
-                    bb.macro_.steps[0] = MacroStep {
-                        key: keys::code("CRO").unwrap_or(9),
-                        hold: 40,
-                        delay: 20,
-                    };
+        // The XBox edition has no macros.
+        let mut is_macro = !xbox && bb.macro_.flags & Macro::ENABLED != 0;
+        if !xbox {
+            ui.horizontal(|ui| {
+                if ui.radio(!is_macro, t("action-single")).clicked() {
+                    is_macro = false;
+                    bb.macro_.flags &= !Macro::ENABLED;
                 }
-                bb.macro_.flags |= Macro::ENABLED;
-            }
-        });
+                if ui.radio(is_macro, t("action-macro")).clicked() {
+                    is_macro = true;
+                    bb.button.map.enabled = 0;
+                    if bb.macro_.step_count == 0 {
+                        bb.macro_.step_count = 1;
+                        bb.macro_.steps.resize(MACRO_STEPS, MacroStep::default());
+                        bb.macro_.steps[0] = MacroStep {
+                            key: keys::code("CRO").unwrap_or(9),
+                            hold: 40,
+                            delay: 20,
+                        };
+                    }
+                    bb.macro_.flags |= Macro::ENABLED;
+                }
+            });
+        }
         if !is_macro {
             ui.horizontal(|ui| {
                 ui.label(t("col-sends"));

@@ -81,9 +81,14 @@ pub fn show(ui: &mut Ui, c: &mut Connected, slot: Slot, st: &mut UiState) {
             card().show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 caption(ui, t("stat-polling"));
+                let rates: &[(u8, &str)] = if c.xbox {
+                    &sirclient_core::protocol::g7pro::xbox::REPORT_RATES
+                } else {
+                    &REPORT_RATES
+                };
                 if let Some(p) = c.profiles.get_mut(&slot) {
                     ui.horizontal_wrapped(|ui| {
-                        for (v, name) in REPORT_RATES {
+                        for &(v, name) in rates {
                             if pill(ui, p.function.extend.report_rate == v, name).clicked() {
                                 p.function.extend.report_rate = v;
                             }
@@ -94,13 +99,6 @@ pub fn show(ui: &mut Ui, c: &mut Connected, slot: Slot, st: &mut UiState) {
         }
     });
 
-    // The XBox edition has no live state report and its rumble and
-    // calibration commands are not known yet: don't send 8K commands to it.
-    if c.xbox {
-        super::xbox_notice(ui);
-        return;
-    }
-
     super::columns(ui, 2, 420.0, |i, ui| {
         if i == 0 {
             live_input(ui, c, st);
@@ -109,7 +107,10 @@ pub fn show(ui: &mut Ui, c: &mut Connected, slot: Slot, st: &mut UiState) {
         }
     });
 
-    shortcuts(ui);
+    // The combos listed are the 8K's.
+    if !c.xbox {
+        shortcuts(ui);
+    }
 
     if st.calib_open {
         calibration_window(ui, c, st);
@@ -289,7 +290,8 @@ fn vibration(ui: &mut Ui, c: &mut Connected, slot: Slot, st: &mut UiState) {
                     duration: Duration::from_millis(600),
                 });
             }
-            if ui.button(t("calibrate")).clicked() {
+            // XBox calibration progress is not in its state stream yet.
+            if !c.xbox && ui.button(t("calibrate")).clicked() {
                 st.calib_open = true;
             }
         });

@@ -37,8 +37,34 @@ const MSG_COMMAND: u8 = 0x0F;
 const MSG_REPLY: u8 = 0x10;
 /// Payload size of command and reply messages.
 const PAYLOAD: usize = 60;
-/// Reply type the firmware streams continuously (raw sensor/stick data).
-const SENSOR_STREAM: u8 = 0xE0;
+/// Reply type the firmware streams continuously: the live controller state,
+/// laid out like the 8K state report with some fields moved.
+const STATE_STREAM: u8 = 0xE0;
+
+/// Rebuild an XBox `E0` state payload as the 8K's 64-byte `0x12` state
+/// report (see [`crate::protocol::g7pro::state`]).
+fn state_report(e: &[u8]) -> Vec<u8> {
+    let at = |i: usize| e.get(i).copied().unwrap_or(0);
+    let mut r = vec![0u8; 64];
+    r[0] = crate::protocol::g7pro::commands::STATE_REPORT_ID;
+    // Mapped inputs: same layout as the 8K (sticks, hat/face, shoulders…).
+    for (i, v) in r.iter_mut().enumerate().take(11).skip(1) {
+        *v = at(i);
+    }
+    // No 16-bit stick low bytes on the XBox: centre them.
+    r[26..30].fill(0x80);
+    r[35] = at(28); // charge state
+    r[36] = at(29); // battery %
+    r[37] = at(30); // active lighting animation
+    for i in 0..15 {
+        r[38 + i] = at(31 + i); // zone RGB
+    }
+    // Physical inputs before remapping.
+    for i in 0..11 {
+        r[53 + i] = at(49 + i);
+    }
+    r
+}
 
 pub fn is_gip_path(path: &str) -> bool {
     path.starts_with(PATH_PREFIX)
@@ -66,13 +92,33 @@ pub fn decode_reply(packet: &[u8]) -> Option<Vec<u8>> {
     }
     let len = (packet[3] as usize).min(packet.len() - 4);
     let payload = &packet[4..4 + len];
-    if payload.first() == Some(&SENSOR_STREAM) {
-        return None;
+    if payload.first() == Some(&STATE_STREAM) {
+        return Some(state_report(payload));
     }
     let mut out = Vec::with_capacity(1 + len);
     out.push(MSG_REPLY);
     out.extend_from_slice(payload);
     Some(out)
+}
+
+/// GIP rumble (message `0x09`) for the main motors; `left`/`right` 0..=255.
+pub fn rumble(left: u8, right: u8, seq: u8) -> [u8; 13] {
+    let pct = |v: u8| (v as u16 * 100 / 255) as u8;
+    [
+        0x09,
+        0x00,
+        seq,
+        0x09,
+        0x00,
+        0x0F,
+        0,
+        0,
+        pct(left),
+        pct(right),
+        0xFF,
+        0x00,
+        0x00,
+    ]
 }
 
 /// GIP acknowledgement for a packet that asked for one (flag `0x10`).
@@ -265,6 +311,14 @@ mod usb {
     impl Link for GipLink {
         fn write(&mut self, report: &[u8]) -> Result<(), Error> {
             let seq = self.next_seq();
+            // The 8K's vibrate command becomes a standard GIP rumble.
+            if report.get(1) == Some(&crate::protocol::g7pro::commands::cmd::VIBRATE) {
+                return self.raw_write(&rumble(
+                    report.get(4).copied().unwrap_or(0),
+                    report.get(5).copied().unwrap_or(0),
+                    seq,
+                ));
+            }
             self.raw_write(&encode_command(report, seq))
         }
 
@@ -333,9 +387,12 @@ mod tests {
         let r = decode_reply(&pkt).unwrap();
         assert_eq!(&r[..3], &[0x10, 0x0C, 0x03]);
         assert_eq!(r.len(), 61);
-        let mut sensor = pkt.clone();
-        sensor[4] = 0xE0;
-        assert!(decode_reply(&sensor).is_none());
+        let mut st = pkt.clone();
+        st[4] = 0xE0;
+        st[4 + 29] = 100; // battery
+        let r = decode_reply(&st).unwrap();
+        let s = crate::protocol::g7pro::State::parse(&r).unwrap();
+        assert_eq!(s.battery, 100);
         assert!(decode_reply(&[0x20, 0x00, 0x01, 0x0e]).is_none());
     }
 
