@@ -16,7 +16,7 @@ use crate::Error;
 use crate::protocol::g7pro::commands::{
     self, CURRENT_PROFILE_MARKER, CalibrationPart, Geometry, Nudge, Reply, Slot, StickSide, cmd,
 };
-use crate::protocol::g7pro::state::State;
+use crate::protocol::g7pro::state::{State, XBOX_STATE_ID};
 use crate::protocol::g7pro::xbox;
 use crate::transport::{REPORT_LEN, pad_report};
 
@@ -70,6 +70,9 @@ pub enum Request {
     Vibrate {
         left: u8,
         right: u8,
+        /// Trigger motors; XBox edition only, 0 on the 8K.
+        lt: u8,
+        rt: u8,
         duration: Duration,
     },
     Calibrate {
@@ -339,9 +342,11 @@ impl Worker {
             Request::Vibrate {
                 left,
                 right,
+                lt,
+                rt,
                 duration,
             } => {
-                self.write_now(&commands::vibrate(left, right));
+                self.write_now(&commands::vibrate_all(left, right, lt, rt));
                 self.timers
                     .push((Instant::now() + duration, commands::vibrate(0, 0)));
             }
@@ -457,9 +462,13 @@ impl Worker {
         {
             return; // another collection on the same stream (keyboard, mouse…)
         }
-        if r[0] == commands::STATE_REPORT_ID {
+        if r[0] == commands::STATE_REPORT_ID || r[0] == XBOX_STATE_ID {
             if self.last_state.elapsed() >= STATE_EVERY
-                && let Some(s) = State::parse(r)
+                && let Some(s) = if r[0] == XBOX_STATE_ID {
+                    State::parse_xbox(r)
+                } else {
+                    State::parse(r)
+                }
             {
                 self.last_state = Instant::now();
                 self.emit(Event::State(Box::new(s)));

@@ -224,6 +224,17 @@ pub fn vibrate(left: u8, right: u8) -> Vec<u8> {
     vec![REPORT_ID, cmd::VIBRATE, 0x66, 0x55, left, right]
 }
 
+/// [`vibrate`] plus the trigger motors (bytes 6 and 7). Only the XBox
+/// edition (through [`crate::gip`], as a GIP rumble) drives those; leave
+/// them 0 for the 8K.
+pub fn vibrate_all(left: u8, right: u8, lt: u8, rt: u8) -> Vec<u8> {
+    let mut v = vibrate(left, right);
+    if lt != 0 || rt != 0 {
+        v.extend_from_slice(&[lt, rt]);
+    }
+    v
+}
+
 /// Preview a lighting animation frame on the controller.
 pub fn light_preview(playing: bool, frame: u8) -> Vec<u8> {
     vec![REPORT_ID, cmd::LIGHT_PREVIEW, playing as u8, frame]

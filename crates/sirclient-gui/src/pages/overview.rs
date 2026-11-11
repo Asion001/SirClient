@@ -254,6 +254,44 @@ fn live_input(ui: &mut Ui, c: &Connected, st: &mut UiState) {
                 chip(ui, on, name);
             }
         });
+        if let Some(m) = s.motion {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    // Tilt from the accelerometer (about 8192 per g).
+                    let g = |v: i16| (v as f32 / 8192.0).clamp(-1.0, 1.0);
+                    stick_view(ui, (g(m.accel[0]), g(m.accel[1])), 96.0);
+                    caption(ui, t("motion-tilt-view"));
+                });
+                ui.add_space(12.0);
+                ui.vertical(|ui| {
+                    caption(ui, t("motion-gyro"));
+                    for (axis, v) in ["X", "Y", "Z"].iter().zip(m.gyro) {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(*axis).monospace());
+                            let f = (v as f32 / 8000.0).clamp(-1.0, 1.0);
+                            ui.add(
+                                egui::ProgressBar::new(f.abs())
+                                    .desired_width(140.0)
+                                    .desired_height(6.0)
+                                    .fill(if f < 0.0 { WARN } else { OK }),
+                            );
+                            ui.label(RichText::new(format!("{v:>6}")).monospace().color(MUTED));
+                        });
+                    }
+                    caption(
+                        ui,
+                        format!(
+                            "{} {:>6} {:>6} {:>6}",
+                            t("motion-accel"),
+                            m.accel[0],
+                            m.accel[1],
+                            m.accel[2]
+                        ),
+                    );
+                });
+            });
+        }
     });
 }
 
@@ -268,33 +306,58 @@ fn vibration(ui: &mut Ui, c: &mut Connected, slot: Slot, st: &mut UiState) {
             "75%".into(),
             "100%".into(),
         ];
+        // The 8K can only test the grip motors; the XBox drives all four.
+        let mut test: Option<[u8; 4]> = None;
         if let Some(p) = c.profiles.get_mut(&slot) {
             let m = &mut p.function.motors;
-            for (label, v) in [
+            for (i, (label, v)) in [
                 (t("motor-left"), &mut m.left),
                 (t("motor-right"), &mut m.right),
                 (t("motor-lt"), &mut m.lt),
                 (t("motor-rt"), &mut m.rt),
-            ] {
+            ]
+            .into_iter()
+            .enumerate()
+            {
                 let mut lvl = motor_level(*v);
                 if slider_u8(ui, &label, &mut lvl, 0..=4, |v| names[v as usize].clone()) {
                     *v = motor_raw(lvl);
+                }
+                if c.xbox || i < 2 {
+                    let strength = if lvl == 0 {
+                        255
+                    } else {
+                        (lvl as u16 * 255 / 4) as u8
+                    };
+                    if ui
+                        .small_button(ta("test-motor", &[("motor", FluentValue::from(label))]))
+                        .clicked()
+                    {
+                        let mut v = [0u8; 4];
+                        v[i] = strength;
+                        test = Some(v);
+                    }
                 }
             }
         }
         ui.horizontal(|ui| {
             if ui.button(t("test-rumble")).clicked() {
-                c.session.send(Request::Vibrate {
-                    left: 180,
-                    right: 180,
-                    duration: Duration::from_millis(600),
-                });
+                test = Some(if c.xbox { [180; 4] } else { [180, 180, 0, 0] });
             }
             // XBox calibration progress is not in its state stream yet.
             if !c.xbox && ui.button(t("calibrate")).clicked() {
                 st.calib_open = true;
             }
         });
+        if let Some([left, right, lt, rt]) = test {
+            c.session.send(Request::Vibrate {
+                left,
+                right,
+                lt,
+                rt,
+                duration: Duration::from_millis(700),
+            });
+        }
     });
 }
 

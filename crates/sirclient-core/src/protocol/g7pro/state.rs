@@ -57,6 +57,18 @@ pub struct Inputs {
     pub buttons: Buttons,
 }
 
+/// Raw IMU readings (signed 16-bit, sensor units). Accelerometer: about
+/// 8192 per g. Only the XBox edition reports these.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub struct Motion {
+    pub gyro: [i16; 3],
+    pub accel: [i16; 3],
+}
+
+/// First byte of the XBox edition's live-state payload (reply type `E0`,
+/// delivered by [`crate::gip`] as is).
+pub const XBOX_STATE_ID: u8 = 0xE0;
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct State {
     /// After remapping (what the game sees).
@@ -70,6 +82,7 @@ pub struct State {
     pub light_preset: u8,
     pub zone_rgb: [[u8; 3]; 5],
     pub recording_key: u8,
+    pub motion: Option<Motion>,
 }
 
 fn axis(hi: u8, lo: Option<u8>) -> f32 {
@@ -150,6 +163,38 @@ impl State {
             light_preset: r[37],
             zone_rgb,
             recording_key: r[53],
+            motion: None,
+        })
+    }
+
+    /// XBox edition state (`E0` payload, 60 bytes): the 8K inputs in bytes
+    /// 1..=10, gyro and accelerometer (i16 LE) at 13 and 19, charge state
+    /// and battery at 28/29, active light animation at 30, zone RGB at 31,
+    /// stick low bytes at 46 and the physical inputs at 49.
+    pub fn parse_xbox(e: &[u8]) -> Option<State> {
+        if e.len() < 60 || e[0] != XBOX_STATE_ID {
+            return None;
+        }
+        let i16_at = |i: usize| i16::from_le_bytes([e[i], e[i + 1]]);
+        let lo = &e[46..50];
+        let mut zone_rgb = [[0u8; 3]; 5];
+        for (i, z) in zone_rgb.iter_mut().enumerate() {
+            z.copy_from_slice(&e[31 + i * 3..34 + i * 3]);
+        }
+        Some(State {
+            mapped: inputs(e, Some(lo)),
+            physical: inputs(&e[49..60], None),
+            charge_state: e[28],
+            battery: e[29],
+            calibration_mode: 0,
+            calibration_status: 0,
+            light_preset: e[30],
+            zone_rgb,
+            recording_key: 0,
+            motion: Some(Motion {
+                gyro: [i16_at(13), i16_at(15), i16_at(17)],
+                accel: [i16_at(19), i16_at(21), i16_at(23)],
+            }),
         })
     }
 }
@@ -170,5 +215,26 @@ mod tests {
         assert!(!s.mapped.buttons.dpad_up);
         assert_eq!(s.mapped.left, (0.0, 0.0));
         assert_eq!(s.battery, 80);
+    }
+
+    #[test]
+    fn parse_xbox_real() {
+        // E0 payload captured from a resting G7 Pro XBox.
+        let hex = concat!(
+            "e080807d800f000000000000000000000003004700cb1f35000000000063",
+            "0000ffff00ffff00ffff00ffff00ffffbbd159e27f7f7a800f0000000000"
+        );
+        let hex: String = hex.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+        let e: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let s = State::parse_xbox(&e).unwrap();
+        assert_eq!(s.battery, 0x63);
+        assert_eq!(s.zone_rgb[0], [0, 255, 255]);
+        let m = s.motion.unwrap();
+        assert_eq!(m.accel, [0x47, 0x1fcb, 0x35]);
+        assert_eq!(m.gyro, [0, 0, 3]);
+        assert!(s.mapped.left.0.abs() < 0.01);
     }
 }

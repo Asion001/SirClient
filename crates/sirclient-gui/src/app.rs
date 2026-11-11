@@ -34,8 +34,10 @@ pub struct Connected {
     pub connection: Option<Connection>,
     pub session: Session,
     pub firmware: Option<(String, String)>,
-    /// Bytes as last read from / written to the controller.
+    /// Bytes as last read from / confirmed written to the controller.
     pub loaded: HashMap<Slot, Vec<u8>>,
+    /// Bytes sent to the controller and not acknowledged yet.
+    pub writing: HashMap<Slot, Vec<u8>>,
     /// Working copies being edited.
     pub profiles: HashMap<Slot, Profile>,
     pub light: Option<LightProfile>,
@@ -87,9 +89,12 @@ impl Connected {
                 Slot::Light => self.light.as_ref().map(|l| l.to_bytes()),
                 s => self.profiles.get(&s).map(|p| p.to_bytes()),
             };
-            if let Some(b) = bytes {
+            if let Some(b) = bytes
+                && self.writing.get(&slot) != Some(&b)
+            {
                 self.session.send(Request::WriteSlot(slot, b.clone()));
-                self.loaded.insert(slot, b);
+                // Counts as saved once the controller acknowledges it.
+                self.writing.insert(slot, b);
             }
         }
     }
@@ -146,6 +151,12 @@ pub struct App {
     pub ui: UiState,
     pub probe: ProbeUi,
     toasts: Vec<Toast>,
+    /// G7 Pro XBox connection being opened off the UI thread (the USB reset
+    /// out of its HID fallback takes several seconds).
+    gip_opening: Option<(
+        crossbeam_channel::Receiver<Result<sirclient_core::gip::GipLink, String>>,
+        HidInfo,
+    )>,
     shots: Option<Shots>,
     /// Widths of the header's profile pills and Revert / Apply block,
     /// measured on the previous frame.
@@ -214,6 +225,7 @@ impl App {
             },
             probe: ProbeUi::default(),
             toasts: vec![],
+            gip_opening: None,
             header_tools_w: (360.0, 260.0),
             shots: shots.map(|dir| Shots {
                 dir,
@@ -262,6 +274,7 @@ impl App {
             session,
             firmware: None,
             loaded: HashMap::new(),
+            writing: HashMap::new(),
             profiles: HashMap::new(),
             light: None,
             xlight: None,
@@ -316,7 +329,28 @@ impl App {
     /// G7 Pro XBox: talk GIP over raw USB (resetting it out of the HID
     /// fallback first when needed).
     fn connect_gip(&mut self, info: &HidInfo) {
-        match sirclient_core::gip::GipLink::open() {
+        if self.gip_opening.is_some() {
+            return;
+        }
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let notify = self.notifier();
+        std::thread::spawn(move || {
+            let r = sirclient_core::gip::GipLink::open().map_err(|e| e.to_string());
+            let _ = tx.send(r);
+            notify();
+        });
+        self.gip_opening = Some((rx, info.clone()));
+        self.toast(t("toast-connecting"), false);
+    }
+
+    /// Finish a connection started by [`Self::connect_gip`].
+    fn poll_gip_opening(&mut self) {
+        let Some((rx, _)) = &self.gip_opening else {
+            return;
+        };
+        let Ok(result) = rx.try_recv() else { return };
+        let (_, info) = self.gip_opening.take().unwrap();
+        match result {
             Ok(link) => {
                 let id = link.path().to_string();
                 let s = Session::spawn(Box::new(link), self.notifier());
@@ -324,15 +358,12 @@ impl App {
                     .model()
                     .map(|(m, _)| m.name.to_string())
                     .unwrap_or_else(|| info.label());
-                self.conn = Some(self.new_connected(id, title, Some(info), s));
+                self.conn = Some(self.new_connected(id, title, Some(&info), s));
                 self.manual_disconnect = false;
                 self.hid.rescan();
             }
             Err(e) => {
-                let mut msg = ta(
-                    "toast-open-failed",
-                    &[("error", FluentValue::from(e.to_string()))],
-                );
+                let mut msg = ta("toast-open-failed", &[("error", FluentValue::from(e))]);
                 if cfg!(target_os = "linux") {
                     msg.push('\n');
                     msg.push_str(&t("hint-udev"));
@@ -360,6 +391,7 @@ impl App {
     }
 
     fn poll(&mut self) {
+        self.poll_gip_opening();
         if let Some(scan) = self.hid.latest() {
             match scan {
                 Ok(list) => {
@@ -415,10 +447,15 @@ impl App {
                             false,
                         ));
                     }
-                    Event::SlotWritten(s) => toasts.push((
-                        ta("toast-saved", &[("slot", FluentValue::from(slot_label(s)))]),
-                        false,
-                    )),
+                    Event::SlotWritten(s) => {
+                        if let Some(b) = c.writing.remove(&s) {
+                            c.loaded.insert(s, b);
+                        }
+                        toasts.push((
+                            ta("toast-saved", &[("slot", FluentValue::from(slot_label(s)))]),
+                            false,
+                        ))
+                    }
                     Event::CurrentProfile(n) => c.current_profile = n,
                     Event::State(s) => c.state = Some(*s),
                     Event::Pending(n) => c.pending = n,
@@ -428,7 +465,11 @@ impl App {
                         }
                     }
                     Event::UsbModeChanged => {}
-                    Event::Warning(w) => toasts.push((w, true)),
+                    Event::Warning(w) => {
+                        // A write that wasn't answered can be applied again.
+                        c.writing.clear();
+                        toasts.push((w, true))
+                    }
                     Event::Disconnected(why) => {
                         toasts.push((ta("toast-lost", &[("error", FluentValue::from(why))]), true));
                         lost = true;
