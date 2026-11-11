@@ -226,6 +226,27 @@ mod tests {
         }
     }
 
+    /// Every character in the shipped translations must exist in the fonts
+    /// egui bundles. A missing one renders as an empty box (seen with "→"
+    /// on Linux, where no system font fallback is used).
+    #[test]
+    fn every_locale_renders_with_bundled_fonts() {
+        use egui::epaint::text::{FontDefinitions, Fonts, TextOptions};
+        let mut fonts = Fonts::new(TextOptions::default(), FontDefinitions::default());
+        let mut view = fonts.with_pixels_per_point(1.0);
+        let font = egui::FontId::proportional(14.0);
+        for (id, src) in EMBEDDED {
+            let missing: BTreeSet<char> = src
+                .chars()
+                .filter(|c| !c.is_control() && !view.has_glyph(&font, *c))
+                .collect();
+            assert!(
+                missing.is_empty(),
+                "{id}.ftl uses characters the bundled fonts lack: {missing:?}"
+            );
+        }
+    }
+
     #[test]
     fn fallback_and_switch() {
         init(Some("en-US"));

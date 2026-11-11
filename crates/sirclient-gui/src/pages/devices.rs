@@ -207,7 +207,7 @@ pub fn show(ui: &mut Ui, app: &mut App) {
         );
         if p.running {
             ui.horizontal(|ui| {
-                ui.spinner();
+                spinner(ui);
                 ui.label(t("probe-running"));
             });
             return;

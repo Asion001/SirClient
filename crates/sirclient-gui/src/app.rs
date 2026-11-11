@@ -133,6 +133,9 @@ pub struct App {
     pub probe: ProbeUi,
     toasts: Vec<Toast>,
     shots: Option<Shots>,
+    /// Widths of the header's profile pills and Revert / Apply block,
+    /// measured on the previous frame.
+    header_tools_w: (f32, f32),
 }
 
 /// `--screenshot <dir>`: render every page against the demo device, save
@@ -194,6 +197,7 @@ impl App {
             },
             probe: ProbeUi::default(),
             toasts: vec![],
+            header_tools_w: (360.0, 260.0),
             shots: shots.map(|dir| Shots {
                 dir,
                 queue: vec![
@@ -382,6 +386,18 @@ impl App {
     }
 
     fn sidebar(&mut self, ui: &mut Ui) {
+        // Room kept for the language picker and version line at the bottom,
+        // so a short window scrolls the list instead of overlapping them.
+        const FOOTER_H: f32 = 100.0;
+        egui::ScrollArea::vertical()
+            .id_salt("sidebar-scroll")
+            .max_height((ui.available_height() - FOOTER_H).max(80.0))
+            .auto_shrink([false, true])
+            .show(ui, |ui| self.sidebar_list(ui));
+        self.sidebar_footer(ui);
+    }
+
+    fn sidebar_list(&mut self, ui: &mut Ui) {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             logo(ui, 24.0);
@@ -466,8 +482,16 @@ impl App {
         if devices.is_empty() && unknown.is_empty() && !mock_selected {
             caption(ui, t("device-none"));
         }
-        if self.conn.is_some() && ui.small_button(t("device-disconnect")).clicked() {
-            self.disconnect();
+        if self.conn.is_some() {
+            ui.add_space(2.0);
+            let b = egui::Button::new(RichText::new(t("device-disconnect")).color(TEXT_2))
+                .fill(egui::Color32::TRANSPARENT)
+                .stroke(egui::Stroke::new(1.0, BORDER_STRONG))
+                .corner_radius(egui::CornerRadius::same(8))
+                .min_size(egui::vec2(ui.available_width(), 30.0));
+            if ui.add(b).clicked() {
+                self.disconnect();
+            }
         }
 
         ui.add_space(14.0);
@@ -484,7 +508,9 @@ impl App {
         ui.add_space(14.0);
         caption(ui, t("sidebar-advanced").to_uppercase());
         self.nav_item(ui, Page::Devices, "nav-devices");
+    }
 
+    fn sidebar_footer(&mut self, ui: &mut Ui) {
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
             ui.add_space(6.0);
             caption(
@@ -540,69 +566,86 @@ impl App {
             Page::Lighting => (t("nav-lighting"), Some(t("lighting-subtitle"))),
             Page::Devices => (t("nav-devices"), Some(t("devices-subtitle"))),
         };
-        ui.horizontal_wrapped(|ui| {
+        let sub = subtitle.unwrap_or_else(|| match &self.conn {
+            Some(c) => {
+                let mut s = c.title.clone();
+                let dirty = c.dirty_slots().len();
+                if dirty > 0 {
+                    s.push_str(" · ");
+                    s.push_str(&ta(
+                        "unsaved-changes",
+                        &[("count", FluentValue::from(dirty))],
+                    ));
+                }
+                s
+            }
+            None => t("no-device"),
+        });
+        let pills = self.page != Page::Lighting;
+        let gap = 12.0;
+        let Self {
+            conn,
+            edit_slot,
+            header_tools_w: tools_w,
+            ..
+        } = self;
+        let conn = if self.page == Page::Devices {
+            None
+        } else {
+            conn.as_mut()
+        };
+        // Revert / Apply and the profile pills sit right of the title when
+        // they fit. Otherwise they move to their own row, and to two rows
+        // when even that is too narrow, so nothing is ever drawn over the
+        // title in small or tiled windows. Widths come from the last frame.
+        let need = if pills {
+            tools_w.0 + gap + ui.spacing().item_spacing.x * 2.0 + tools_w.1
+        } else {
+            tools_w.1
+        };
+        let mut conn = conn;
+        ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.label(RichText::new(title).size(26.0).strong());
-                let sub = subtitle.unwrap_or_else(|| match &self.conn {
-                    Some(c) => {
-                        let mut s = c.title.clone();
-                        let dirty = c.dirty_slots().len();
-                        if dirty > 0 {
-                            s.push_str(" · ");
-                            s.push_str(&ta(
-                                "unsaved-changes",
-                                &[("count", FluentValue::from(dirty))],
-                            ));
-                        }
-                        s
-                    }
-                    None => t("no-device"),
-                });
                 ui.label(RichText::new(sub).color(MUTED));
             });
-            if self.page == Page::Devices {
+            let Some(c) = conn.as_deref_mut() else { return };
+            if ui.available_width() < need + 16.0 {
                 return;
             }
-            let Some(c) = &mut self.conn else { return };
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let dirty = !c.dirty_slots().is_empty();
-                if primary_button(ui, dirty, t("apply")).clicked() {
-                    c.apply();
-                }
-                if ui
-                    .add_enabled(dirty, egui::Button::new(t("revert")))
-                    .clicked()
-                {
-                    c.revert();
-                }
-                if c.pending > 0 {
-                    ui.spinner();
-                }
-                if self.page != Page::Lighting {
-                    ui.add_space(12.0);
-                    for slot in [
-                        Slot::Shift,
-                        Slot::Profile(4),
-                        Slot::Profile(3),
-                        Slot::Profile(2),
-                        Slot::Profile(1),
-                    ] {
-                        let active_on_device =
-                            matches!(slot, Slot::Profile(n) if n == c.current_profile);
-                        let mut label = slot_label(slot);
-                        if active_on_device {
-                            label.push_str(ACTIVE_MARK);
-                        }
-                        if pill(ui, self.edit_slot == slot, label).clicked() {
-                            self.edit_slot = slot;
-                            if let Slot::Profile(_) = slot {
-                                c.session.send(Request::SwitchProfile(slot));
-                            }
-                        }
-                    }
+                tools_w.1 = header_actions(ui, c, true);
+                if pills {
+                    ui.add_space(gap);
+                    tools_w.0 = profile_pills(ui, c, edit_slot, true);
                 }
             });
+            conn = None;
         });
+        let Some(c) = conn else { return };
+        ui.add_space(4.0);
+        // A right-to-left layout straight inside this vertical one would
+        // centre itself in the whole page height; give it a row.
+        let actions_row = |ui: &mut Ui, c: &mut Connected, w: &mut f32| {
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    *w = header_actions(ui, c, true);
+                });
+            });
+        };
+        if !pills {
+            actions_row(ui, c, &mut tools_w.1);
+        } else if ui.available_width() >= need {
+            ui.horizontal(|ui| {
+                tools_w.0 = profile_pills(ui, c, edit_slot, false);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    tools_w.1 = header_actions(ui, c, true);
+                });
+            });
+        } else {
+            ui.horizontal(|ui| tools_w.0 = profile_pills(ui, c, edit_slot, false));
+            actions_row(ui, c, &mut tools_w.1);
+        }
     }
 
     fn toasts_ui(&self, ui: &mut Ui) {
@@ -667,6 +710,77 @@ impl App {
             });
         }
     }
+}
+
+/// Busy spinner, Revert and Apply as one block; returns its width.
+fn header_actions(ui: &mut Ui, c: &mut Connected, rtl: bool) -> f32 {
+    let dirty = !c.dirty_slots().is_empty();
+    let busy = c.pending > 0;
+    let r = ui.horizontal(|ui| {
+        let mut apply = false;
+        let mut revert = false;
+        // Left to right: spinner, Revert, Apply. Built from the right edge
+        // when `rtl`, so the calls run in reverse.
+        for i in 0..3 {
+            match if rtl { 2 - i } else { i } {
+                0 => {
+                    // Keep the spinner's room so the buttons do not jump.
+                    if busy {
+                        spinner(ui);
+                    } else {
+                        ui.add_space(spinner_size(ui));
+                    }
+                }
+                1 => {
+                    revert = ui
+                        .add_enabled(dirty, egui::Button::new(t("revert")))
+                        .clicked();
+                }
+                _ => apply = primary_button(ui, dirty, t("apply")).clicked(),
+            }
+        }
+        (apply, revert)
+    });
+    let (apply, revert) = r.inner;
+    if apply {
+        c.apply();
+    }
+    if revert {
+        c.revert();
+    }
+    r.response.rect.width()
+}
+
+/// Profile 1-4 and Shift pills; returns the block's width.
+fn profile_pills(ui: &mut Ui, c: &mut Connected, edit_slot: &mut Slot, rtl: bool) -> f32 {
+    let mut slots = [
+        Slot::Profile(1),
+        Slot::Profile(2),
+        Slot::Profile(3),
+        Slot::Profile(4),
+        Slot::Shift,
+    ];
+    if rtl {
+        slots.reverse();
+    }
+    ui.horizontal(|ui| {
+        for slot in slots {
+            let active_on_device = matches!(slot, Slot::Profile(n) if n == c.current_profile);
+            let mut label = slot_label(slot);
+            if active_on_device {
+                label.push_str(ACTIVE_MARK);
+            }
+            if pill(ui, *edit_slot == slot, label).clicked() {
+                *edit_slot = slot;
+                if let Slot::Profile(_) = slot {
+                    c.session.send(Request::SwitchProfile(slot));
+                }
+            }
+        }
+    })
+    .response
+    .rect
+    .width()
 }
 
 pub fn slot_label(s: Slot) -> String {
@@ -767,7 +881,7 @@ impl eframe::App for App {
                             };
                             if !c.loaded_all() {
                                 ui.horizontal(|ui| {
-                                    ui.spinner();
+                                    spinner(ui);
                                     ui.label(t("loading"));
                                 });
                                 if c.loaded.is_empty()

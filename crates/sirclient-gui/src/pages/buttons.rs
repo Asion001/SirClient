@@ -214,7 +214,7 @@ fn back_buttons(ui: &mut Ui, p: &mut sirclient_core::protocol::g7pro::Profile, s
                         ui.label("—");
                     }
                     if ui
-                        .small_button("✕")
+                        .small_button("×")
                         .on_hover_text(t("macro-remove"))
                         .clicked()
                     {

@@ -197,6 +197,36 @@ pub fn logo(ui: &mut Ui, size: f32) {
     p.circle_filled(rect.center(), size * 0.14, ACCENT);
 }
 
+pub fn spinner_size(ui: &Ui) -> f32 {
+    ui.text_style_height(&egui::TextStyle::Body).max(14.0)
+}
+
+/// Busy indicator: a faint ring with an accent arc going round it.
+/// egui's own spinner grows and shrinks its arc, so a still frame often
+/// shows a thick crescent that looks clipped.
+pub fn spinner(ui: &mut Ui) {
+    let size = spinner_size(ui);
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    ui.ctx().request_repaint();
+    let p = ui.painter();
+    let c = rect.center();
+    let r = size / 2.0 - 1.5;
+    p.circle_stroke(c, r, Stroke::new(2.0, BORDER_STRONG));
+    let start = ui.input(|i| i.time) as f32 * std::f32::consts::TAU * 0.8;
+    let sweep = std::f32::consts::FRAC_PI_2 * 1.3;
+    let n = 16;
+    let arc: Vec<Pos2> = (0..=n)
+        .map(|i| {
+            let a = start + i as f32 / n as f32 * sweep;
+            c + vec2(a.cos(), a.sin()) * r
+        })
+        .collect();
+    p.add(egui::Shape::line(arc, Stroke::new(2.0, ACCENT)));
+}
+
 /// Marker appended to labels of the item active on the controller.
 pub const ACTIVE_MARK: &str = " •";
 

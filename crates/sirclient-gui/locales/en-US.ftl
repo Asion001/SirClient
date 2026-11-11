@@ -29,7 +29,7 @@ conn-wireless = Wireless · 2.4 GHz
 
 no-device = No controller connected
 loading = Reading settings from the controller…
-loading-no-answer = The controller is not answering. It may use a different protocol, or another app may be using it. Try HID devices & Bluetooth → Probe config, or run `sirclient --diagnose` and attach the output to an issue.
+loading-no-answer = The controller is not answering. It may use a different protocol, or another app may be using it. Try HID devices & Bluetooth › Probe config, or run `sirclient --diagnose` and attach the output to an issue.
 hint-udev = On Linux, install the udev rule shipped with SirClient (70-sirclient.rules), then unplug and replug the controller.
 empty-title = No controller connected
 empty-body = Plug in a G7 Pro 8K with its cable or 2.4 GHz dongle, or pick Demo device in the sidebar to explore the app.
