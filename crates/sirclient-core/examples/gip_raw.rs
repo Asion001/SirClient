@@ -27,6 +27,9 @@ fn main() {
     let on_announce = args.iter().any(|a| a == "--on-announce");
     let identify = args.iter().any(|a| a == "--identify");
     let led = args.iter().any(|a| a == "--led");
+    // Linux xpad selects alt setting 0 on the audio interface (1) before
+    // powering the pad on; some GIP devices wait for that.
+    let audio_alt0 = args.iter().any(|a| a == "--audio-alt0");
     let power_on = !args.iter().any(|a| a == "--no-power-on");
 
     let ctx = rusb::Context::new().expect("libusb");
@@ -177,6 +180,13 @@ fn main() {
     }
     println!("kernel driver active: {:?}", h.kernel_driver_active(0));
     println!("claim_interface(0): {:?}", h.claim_interface(0));
+    if audio_alt0 {
+        println!("claim_interface(1): {:?}", h.claim_interface(1));
+        println!(
+            "set_alternate_setting(1, 0): {:?}",
+            h.set_alternate_setting(1, 0)
+        );
+    }
 
     let mut seq = 0u8;
     let mut send = |h: &rusb::DeviceHandle<rusb::Context>, label: &str, mut pkt: Vec<u8>| {
