@@ -5,7 +5,10 @@
 //!     cargo run -p sirclient-core --example gip_raw [--wait] [--reset] [--set-config] [--no-power-on]
 //!
 //! `--wait` waits up to 60 s for the pad to appear in GIP mode (plug the
-//! dongle in while it waits) and sends the init right away.
+//! dongle in while it waits) and sends the init right away. `--hold` then
+//! keeps sending the `F2` heartbeat every 250 ms for 20 s, reading the
+//! profile and firmware along the way, to see whether the dongle stays in
+//! GIP mode.
 
 use std::time::{Duration, Instant};
 
@@ -19,6 +22,7 @@ fn main() {
     let set_config = args.iter().any(|a| a == "--set-config");
     let reset = args.iter().any(|a| a == "--reset");
     let wait = args.iter().any(|a| a == "--wait");
+    let hold = args.iter().any(|a| a == "--hold");
     let power_on = !args.iter().any(|a| a == "--no-power-on");
 
     let ctx = rusb::Context::new().expect("libusb");
@@ -239,6 +243,63 @@ fn main() {
         p
     };
     send(&h, "F2 01 (app present)", cmd(&[0xF2, 0x01]));
+    if hold {
+        let t0 = Instant::now();
+        let mut next_hb = Instant::now();
+        let mut asked = 0;
+        let mut buf = [0u8; 64];
+        let mut states = 0;
+        while t0.elapsed() < Duration::from_secs(20) {
+            if Instant::now() >= next_hb {
+                seq = seq.wrapping_add(1).max(1);
+                let mut p = cmd(&[0xF2, 0x00]);
+                p[2] = seq;
+                if let Err(e) = h.write_interrupt(0x02, &p, Duration::from_millis(200)) {
+                    println!("{:>5} ms heartbeat failed: {e}", t0.elapsed().as_millis());
+                    break;
+                }
+                next_hb += Duration::from_millis(250);
+            }
+            let ms = t0.elapsed().as_millis();
+            if (asked == 0 && ms > 3000) || (asked == 1 && ms > 4000) {
+                seq = seq.wrapping_add(1).max(1);
+                let mut p = cmd(if asked == 0 { &[0x0B] } else { &[0x09] });
+                p[2] = seq;
+                let r = h.write_interrupt(0x02, &p, Duration::from_millis(200));
+                println!("{ms:>5} ms > {:02x} -> {r:?}", p[4]);
+                asked += 1;
+            }
+            match h.read_interrupt(0x82, &mut buf, Duration::from_millis(50)) {
+                Ok(n) => {
+                    let p = &buf[..n];
+                    if n >= 4 && p[1] & 0x10 != 0 {
+                        let ack = [
+                            0x01, 0x20, p[2], 0x09, 0x00, p[0], 0x20, p[3], 0, 0, 0, 0, 0,
+                        ];
+                        let _ = h.write_interrupt(0x02, &ack, Duration::from_millis(200));
+                    }
+                    let is_state = (p[0] == 0x10 && p.get(4) == Some(&0xE0)) || p[0] == 0x20;
+                    if is_state {
+                        states += 1;
+                    } else {
+                        println!("{ms:>5} ms < {:02x?}", &p[..n.min(24)]);
+                    }
+                }
+                Err(rusb::Error::Timeout) => {}
+                Err(e) => {
+                    println!("{ms:>5} ms read error: {e}");
+                    break;
+                }
+            }
+        }
+        println!(
+            "held for {} ms, {states} state/input packets, PIDs now {:04x?}",
+            t0.elapsed().as_millis(),
+            pids_now(&ctx)
+        );
+        let _ = h.release_interface(0);
+        return;
+    }
     listen(&h, 1000);
     send(&h, "0B (current profile)", cmd(&[0x0B]));
     listen(&h, 1000);
