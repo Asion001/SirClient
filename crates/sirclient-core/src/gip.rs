@@ -91,7 +91,9 @@ fn ack_for(packet: &[u8]) -> Option<[u8; 13]> {
 mod usb {
     use std::time::{Duration, Instant};
 
-    use rusb::{DeviceHandle, GlobalContext, UsbContext};
+    use std::sync::OnceLock;
+
+    use rusb::{Context, DeviceHandle, UsbContext};
 
     use super::*;
     use crate::Error;
@@ -108,25 +110,36 @@ mod usb {
         Error::Usb(e.to_string())
     }
 
-    fn path_of(d: &rusb::Device<GlobalContext>) -> String {
+    /// Shared libusb context, or `None` when libusb can't start (no
+    /// `/dev/bus/usb`, e.g. in a sandbox or container). rusb's
+    /// `GlobalContext` panics in that case, which took down the device-scan
+    /// thread along with the plain HID devices it was listing.
+    fn ctx() -> Option<&'static Context> {
+        static CTX: OnceLock<Option<Context>> = OnceLock::new();
+        CTX.get_or_init(|| match Context::new() {
+            Ok(c) => Some(c),
+            Err(e) => {
+                log::warn!("libusb unavailable, GIP devices won't be listed: {e}");
+                None
+            }
+        })
+        .as_ref()
+    }
+
+    fn path_of(d: &rusb::Device<Context>) -> String {
         format!("{PATH_PREFIX}{:03}:{:03}", d.bus_number(), d.address())
     }
 
-    fn find(pids: &[u16]) -> Option<rusb::Device<GlobalContext>> {
-        rusb::GlobalContext::default()
-            .devices()
-            .ok()?
-            .iter()
-            .find(|d| {
-                d.device_descriptor().is_ok_and(|dd| {
-                    dd.vendor_id() == GAMESIR_VID && pids.contains(&dd.product_id())
-                })
-            })
+    fn find(pids: &[u16]) -> Option<rusb::Device<Context>> {
+        ctx()?.devices().ok()?.iter().find(|d| {
+            d.device_descriptor()
+                .is_ok_and(|dd| dd.vendor_id() == GAMESIR_VID && pids.contains(&dd.product_id()))
+        })
     }
 
     /// GIP-mode GameSir devices, as entries for the device list.
     pub fn enumerate() -> Vec<HidInfo> {
-        let Ok(list) = rusb::GlobalContext::default().devices() else {
+        let Some(Ok(list)) = ctx().map(|c| c.devices()) else {
             return vec![];
         };
         list.iter()
@@ -171,11 +184,10 @@ mod usb {
     }
 
     pub struct GipLink {
-        handle: DeviceHandle<GlobalContext>,
+        handle: DeviceHandle<Context>,
         reattach: bool,
         seq: u8,
         path: String,
-        pending: std::collections::VecDeque<Vec<u8>>,
     }
 
     impl GipLink {
@@ -205,7 +217,13 @@ mod usb {
                     Err(rusb::Error::Busy) if Instant::now() < end => {
                         std::thread::sleep(Duration::from_millis(25))
                     }
-                    Err(e) => return Err(usb(e)),
+                    Err(e) => {
+                        // Don't leave the pad without its gamepad driver.
+                        if reattach {
+                            let _ = handle.attach_kernel_driver(IFACE);
+                        }
+                        return Err(usb(e));
+                    }
                 }
             }
             let mut link = GipLink {
@@ -213,7 +231,6 @@ mod usb {
                 reattach,
                 seq: 0,
                 path,
-                pending: Default::default(),
             };
             if !link.reattach {
                 // No system driver started the pad (macOS, Windows with
@@ -252,11 +269,6 @@ mod usb {
         }
 
         fn read(&mut self, buf: &mut [u8], timeout_ms: i32) -> Result<usize, Error> {
-            if let Some(r) = self.pending.pop_front() {
-                let n = r.len().min(buf.len());
-                buf[..n].copy_from_slice(&r[..n]);
-                return Ok(n);
-            }
             let end = Instant::now() + Duration::from_millis(timeout_ms.max(1) as u64);
             let mut pkt = [0u8; 64];
             loop {
