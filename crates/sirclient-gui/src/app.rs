@@ -50,6 +50,8 @@ pub struct Connected {
     /// G7 Pro XBox over GIP: no macros, its own lighting model and report
     /// rates.
     pub xbox: bool,
+    /// G7 Pro XBox over Bluetooth: live input, battery and rumble only.
+    pub bt: bool,
 }
 
 impl Connected {
@@ -282,9 +284,12 @@ impl App {
             state: None,
             pending: 0,
             connected_at: Instant::now(),
-            xbox: info
+            xbox: info.and_then(|i| i.model()).is_some_and(|(m, _)| {
+                matches!(m.protocol, Protocol::G7ProXbox | Protocol::XboxBluetooth)
+            }),
+            bt: info
                 .and_then(|i| i.model())
-                .is_some_and(|(m, _)| m.protocol == Protocol::G7ProXbox),
+                .is_some_and(|(m, _)| m.protocol == Protocol::XboxBluetooth),
         }
     }
 
@@ -302,9 +307,17 @@ impl App {
             self.connect_gip(info);
             return;
         }
+        let bt = info
+            .model()
+            .is_some_and(|(m, _)| m.protocol == Protocol::XboxBluetooth);
         match self.hid.open(&info.path) {
             Ok(dev) => {
-                let s = Session::spawn(Box::new(dev), self.notifier());
+                let link: Box<dyn sirclient_core::session::Link> = if bt {
+                    Box::new(sirclient_core::bt::BtLink::new(dev))
+                } else {
+                    Box::new(dev)
+                };
+                let s = Session::spawn(link, self.notifier());
                 let title = info
                     .model()
                     .map(|(m, _)| m.name.to_string())
@@ -898,6 +911,7 @@ pub fn conn_label(c: Connection) -> String {
     match c {
         Connection::Wired => t("conn-wired"),
         Connection::Wireless => t("conn-wireless"),
+        Connection::Bluetooth => t("conn-bluetooth"),
     }
 }
 
@@ -982,6 +996,14 @@ impl eframe::App for App {
                                 pages::empty_state(ui);
                                 return;
                             };
+                            if c.bt {
+                                if page == Page::Overview {
+                                    pages::overview::show_live(ui, c, &mut self.ui);
+                                } else {
+                                    pages::bt_notice(ui);
+                                }
+                                return;
+                            }
                             if !c.loaded_all() {
                                 ui.horizontal(|ui| {
                                     spinner(ui);

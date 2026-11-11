@@ -40,6 +40,11 @@ pub trait Link: Send {
     fn geometry(&self) -> Geometry {
         Geometry::HID
     }
+    /// False for links that only carry live input and rumble (the XBox
+    /// edition over Bluetooth): no reads, writes or heartbeat are sent.
+    fn has_config(&self) -> bool {
+        true
+    }
 }
 
 impl Link for hidapi::HidDevice {
@@ -167,7 +172,9 @@ impl Session {
             .name("sirclient-session".into())
             .spawn(move || {
                 let mut w = Worker::new(link, req_rx, ev_tx, notify);
-                w.send(Request::Reload);
+                if w.config {
+                    w.send(Request::Reload);
+                }
                 w.run();
             })
             .expect("spawn session thread");
@@ -213,6 +220,8 @@ struct Worker {
     /// Report IDs of the configuration collection; others are ignored.
     accept: Option<Vec<u8>>,
     geo: Geometry,
+    /// See [`Link::has_config`].
+    config: bool,
 }
 
 impl Worker {
@@ -225,10 +234,12 @@ impl Worker {
         let now = Instant::now();
         let accept = link.config_report_ids();
         let geo = link.geometry();
+        let config = link.has_config();
         log::info!("configuration report ids: {accept:02x?}, geometry {geo:?}");
         Worker {
             accept,
             geo,
+            config,
             link,
             req,
             ev,
@@ -281,6 +292,9 @@ impl Worker {
     }
 
     fn send(&mut self, r: Request) -> bool {
+        if !self.config && !matches!(r, Request::Vibrate { .. } | Request::Close) {
+            return true; // live-only link: nothing to configure
+        }
         match r {
             Request::Reload => {
                 self.enqueue(commands::read_firmware());
@@ -384,7 +398,7 @@ impl Worker {
             }
 
             let now = Instant::now();
-            if now.duration_since(self.last_heartbeat) >= HEARTBEAT_EVERY {
+            if self.config && now.duration_since(self.last_heartbeat) >= HEARTBEAT_EVERY {
                 self.last_heartbeat = now;
                 self.write_now(&commands::heartbeat(false));
             }

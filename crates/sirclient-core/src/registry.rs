@@ -17,6 +17,9 @@ pub enum Protocol {
     /// G7 Pro XBox: the G7 Pro command set tunnelled through Xbox GIP over
     /// raw USB (see [`crate::gip`]).
     G7ProXbox,
+    /// The G7 Pro XBox over Bluetooth: a standard Xbox BT gamepad, live
+    /// input and rumble only (see [`crate::bt`]).
+    XboxBluetooth,
     /// Cyclone 2.
     C2,
     /// K2 8K.
@@ -40,7 +43,7 @@ pub enum Protocol {
 impl Protocol {
     /// Whether SirClient can configure devices of this family.
     pub fn is_implemented(self) -> bool {
-        matches!(self, Protocol::G7Pro)
+        matches!(self, Protocol::G7Pro | Protocol::XboxBluetooth)
             || (matches!(self, Protocol::G7ProXbox) && cfg!(target_os = "linux"))
     }
 }
@@ -51,6 +54,8 @@ pub enum Connection {
     Wired,
     /// 2.4 GHz dongle.
     Wireless,
+    /// Bluetooth (only live input and rumble on the XBox edition).
+    Bluetooth,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -420,7 +425,24 @@ pub static MODELS: &[ModelInfo] = &[
 ];
 
 /// Find the model and mode for a VID/PID pair.
+/// The G7 Pro XBox over Bluetooth, which uses Microsoft's IDs.
+pub static XBOX_BLUETOOTH: ModelInfo = ModelInfo {
+    id: "G7ProXboxBT",
+    name: "G7 Pro XBox (Bluetooth)",
+    protocol: Protocol::XboxBluetooth,
+    vendor_dll: false,
+    modes: &[ModeInfo {
+        pid: crate::bt::BT_PID,
+        connection: Connection::Bluetooth,
+        usage_page: 0x0001,
+        variant: "Xbox Bluetooth Gamepad",
+    }],
+};
+
 pub fn lookup(vid: u16, pid: u16) -> Option<(&'static ModelInfo, &'static ModeInfo)> {
+    if vid == crate::bt::MS_VID && pid == crate::bt::BT_PID {
+        return Some((&XBOX_BLUETOOTH, &XBOX_BLUETOOTH.modes[0]));
+    }
     if vid != GAMESIR_VID {
         return None;
     }

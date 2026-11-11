@@ -26,6 +26,7 @@ device-unknown-sub = Unknown model { $id } · click to try the G7 Pro protocol
 device-disconnect = Disconnect
 conn-wired = Wired · USB
 conn-wireless = Wireless · 2.4 GHz
+conn-bluetooth = Bluetooth
 
 no-device = No controller connected
 loading = Reading settings from the controller…
@@ -246,3 +247,5 @@ motion-tilt-view = Tilt (accelerometer)
 motion-gyro = Gyro (raw)
 motion-accel = Accel
 toast-connecting = Connecting to the controller…
+bt-notice-title = Settings need the dongle or the cable
+bt-notice-body = Over Bluetooth the G7 Pro XBox is a standard Xbox gamepad without GameSir's settings channel (GameSir's own app can't change settings over Bluetooth either). Live input, battery and vibration work here; plug in the dongle or a cable to edit profiles, sticks, motion and lighting.

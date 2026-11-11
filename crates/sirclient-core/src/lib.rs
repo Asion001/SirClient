@@ -11,6 +11,7 @@
 //!   request/acknowledge loop against a device.
 //! * [`mock`] simulates a G7 Pro so the UI can run without hardware.
 
+pub mod bt;
 pub mod diag;
 pub mod gip;
 pub mod mock;

@@ -22,6 +22,59 @@ fn stat(ui: &mut Ui, label: String, value: String, sub: String) {
     });
 }
 
+/// Overview for a live-only connection (the G7 Pro XBox over Bluetooth):
+/// battery, live input and a rumble test per motor.
+pub fn show_live(ui: &mut Ui, c: &mut Connected, st: &mut UiState) {
+    super::bt_notice(ui);
+    ui.add_space(14.0);
+    let battery = c.state.as_ref().map(|s| s.battery);
+    super::columns(ui, 2, 420.0, |i, ui| {
+        if i == 0 {
+            live_input(ui, c, st);
+        } else {
+            card().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                caption(ui, t("stat-battery"));
+                ui.label(
+                    RichText::new(battery.map_or("—".into(), |b| format!("{b}%")))
+                        .size(18.0)
+                        .strong(),
+                );
+                ui.add_space(8.0);
+                heading(ui, t("vibration"));
+                let mut test = None;
+                ui.horizontal_wrapped(|ui| {
+                    for (i, key) in ["motor-left", "motor-right", "motor-lt", "motor-rt"]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        if ui
+                            .button(ta("test-motor", &[("motor", FluentValue::from(t(key)))]))
+                            .clicked()
+                        {
+                            let mut v = [0u8; 4];
+                            v[i] = 255;
+                            test = Some(v);
+                        }
+                    }
+                    if ui.button(t("test-rumble")).clicked() {
+                        test = Some([180; 4]);
+                    }
+                });
+                if let Some([left, right, lt, rt]) = test {
+                    c.session.send(Request::Vibrate {
+                        left,
+                        right,
+                        lt,
+                        rt,
+                        duration: Duration::from_millis(700),
+                    });
+                }
+            });
+        }
+    });
+}
+
 pub fn show(ui: &mut Ui, c: &mut Connected, slot: Slot, st: &mut UiState) {
     let battery = c.state.as_ref().map(|s| (s.battery, s.charge_state));
     super::columns(ui, 4, 210.0, |i, ui| match i {

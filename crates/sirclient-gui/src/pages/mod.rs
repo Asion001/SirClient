@@ -18,6 +18,15 @@ pub fn empty_state(ui: &mut Ui) {
     });
 }
 
+/// Shown instead of the editors when the G7 Pro XBox is on Bluetooth.
+pub fn bt_notice(ui: &mut Ui) {
+    card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new(t("bt-notice-title")).size(16.0).strong());
+        ui.label(RichText::new(t("bt-notice-body")).color(MUTED));
+    });
+}
+
 /// Lay out cards in a wrapping row with roughly `min` px per card.
 pub fn columns(ui: &mut Ui, n: usize, min: f32, mut f: impl FnMut(usize, &mut Ui)) {
     let w = ui.available_width();
