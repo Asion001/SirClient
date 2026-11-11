@@ -4,7 +4,7 @@
 //!
 //!     cargo run -p sirclient-core --example gip_raw [--wait] [--reset] [--set-config] [--no-power-on]
 //!
-//! `--wait` waits up to 60 s for the pad to appear in GIP mode (plug the
+//! `--wait` waits up to 5 minutes for the pad to appear in GIP mode (plug the
 //! dongle in while it waits) and sends the init right away. `--hold` then
 //! keeps sending the `F2` heartbeat every 250 ms for 20 s, reading the
 //! profile and firmware along the way, to see whether the dongle stays in
@@ -42,7 +42,7 @@ fn main() {
         println!("waiting for 3537:10BA/10BB (plug the dongle in now)...");
         let t0 = Instant::now();
         let mut last = Vec::new();
-        while t0.elapsed() < Duration::from_secs(60) {
+        while t0.elapsed() < Duration::from_secs(300) {
             let p = pids_now(&ctx);
             if p != last {
                 println!("  {:>5} ms: {p:04x?}", t0.elapsed().as_millis());
