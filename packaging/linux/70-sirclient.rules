@@ -1,0 +1,9 @@
+# Lets members of the "input" group (or the logged-in user, via uaccess)
+# open GameSir controllers' HID interfaces without root.
+#
+#   sudo cp 70-sirclient.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+
+KERNEL=="hidraw*", ATTRS{idVendor}=="3537", MODE="0660", GROUP="input", TAG+="uaccess"
+# Bluetooth connections
+KERNEL=="hidraw*", KERNELS=="*:3537:*", MODE="0660", GROUP="input", TAG+="uaccess"

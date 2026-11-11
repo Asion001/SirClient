@@ -1,0 +1,760 @@
+//! Application state, layout shell (sidebar + header) and page routing.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use egui::{RichText, Ui};
+use fluent_bundle::FluentValue;
+use sirclient_core::mock::{MOCK_PATH, MockG7};
+use sirclient_core::protocol::g7pro::{LightProfile, Profile, Slot, State};
+use sirclient_core::registry::Connection;
+use sirclient_core::session::{Event, Request, Session};
+use sirclient_core::transport::{HidInfo, HidService};
+
+use crate::i18n::{self, t, ta};
+use crate::pages::{self, devices::ProbeUi};
+use crate::theme::*;
+use crate::widgets::*;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Page {
+    Overview,
+    Buttons,
+    Sticks,
+    Lighting,
+    Devices,
+}
+
+/// Everything known about the connected controller.
+pub struct Connected {
+    pub id: String,
+    pub title: String,
+    pub connection: Option<Connection>,
+    pub session: Session,
+    pub firmware: Option<(String, String)>,
+    /// Bytes as last read from / written to the controller.
+    pub loaded: HashMap<Slot, Vec<u8>>,
+    /// Working copies being edited.
+    pub profiles: HashMap<Slot, Profile>,
+    pub light: Option<LightProfile>,
+    pub current_profile: u8,
+    pub state: Option<State>,
+    pub pending: usize,
+}
+
+impl Connected {
+    pub fn is_mock(&self) -> bool {
+        self.id == MOCK_PATH
+    }
+
+    pub fn loaded_all(&self) -> bool {
+        Slot::ALL.iter().all(|s| self.loaded.contains_key(s))
+    }
+
+    pub fn dirty_slots(&self) -> Vec<Slot> {
+        let mut out = vec![];
+        for (slot, p) in &self.profiles {
+            if self.loaded.get(slot).is_some_and(|b| *b != p.to_bytes()) {
+                out.push(*slot);
+            }
+        }
+        if let (Some(l), Some(b)) = (&self.light, self.loaded.get(&Slot::Light))
+            && *b != l.to_bytes()
+        {
+            out.push(Slot::Light);
+        }
+        out.sort_by_key(|s| s.number());
+        out
+    }
+
+    pub fn apply(&mut self) {
+        for slot in self.dirty_slots() {
+            let bytes = match slot {
+                Slot::Light => self.light.as_ref().map(|l| l.to_bytes()),
+                s => self.profiles.get(&s).map(|p| p.to_bytes()),
+            };
+            if let Some(b) = bytes {
+                self.session.send(Request::WriteSlot(slot, b.clone()));
+                self.loaded.insert(slot, b);
+            }
+        }
+    }
+
+    pub fn revert(&mut self) {
+        for (slot, bytes) in &self.loaded {
+            match slot {
+                Slot::Light => self.light = LightProfile::from_bytes(bytes).ok(),
+                s => {
+                    if let Ok(p) = Profile::from_bytes(bytes) {
+                        self.profiles.insert(*s, p);
+                    }
+                }
+            }
+        }
+    }
+
+    fn take_slot(&mut self, slot: Slot, bytes: Vec<u8>, keep_edits: bool) {
+        let dirty = self.dirty_slots().contains(&slot);
+        self.loaded.insert(slot, bytes.clone());
+        if keep_edits && dirty {
+            return;
+        }
+        match slot {
+            Slot::Light => self.light = LightProfile::from_bytes(&bytes).ok(),
+            s => {
+                if let Ok(p) = Profile::from_bytes(&bytes) {
+                    self.profiles.insert(s, p);
+                }
+            }
+        }
+    }
+}
+
+pub struct Toast {
+    pub text: String,
+    pub warn: bool,
+    pub at: Instant,
+}
+
+pub struct App {
+    ctx: egui::Context,
+    hid: HidService,
+    pub hid_error: Option<String>,
+    pub all_hid: Vec<HidInfo>,
+    scanned: bool,
+    pub conn: Option<Connected>,
+    /// User disconnected on purpose; don't auto-connect again.
+    manual_disconnect: bool,
+    pub page: Page,
+    pub edit_slot: Slot,
+    pub ui: UiState,
+    pub probe: ProbeUi,
+    toasts: Vec<Toast>,
+    shots: Option<Shots>,
+}
+
+/// `--screenshot <dir>`: render every page against the demo device, save
+/// PNGs and quit. Used for docs and visual checks.
+struct Shots {
+    dir: std::path::PathBuf,
+    queue: Vec<(Page, &'static str)>,
+    frames: u32,
+    requested: bool,
+    done: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Per-page view state that is not part of the device.
+pub struct UiState {
+    pub show_physical: bool,
+    pub back_tab: usize,
+    pub sticks_tab: usize,
+    pub motion_tab: usize,
+    pub light_preset: usize,
+    pub calib_open: bool,
+    pub controllers_only: bool,
+    /// Show VID/PID, usage pages and raw reports on the devices page.
+    pub show_tech: bool,
+}
+
+impl App {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        mock: bool,
+        shots: Option<std::path::PathBuf>,
+    ) -> Self {
+        apply(&cc.egui_ctx);
+        let lang = cc.storage.and_then(|s| s.get_string("language"));
+        i18n::init(lang.as_deref());
+        let ctx = cc.egui_ctx.clone();
+        let hid = HidService::spawn(
+            Duration::from_secs(2),
+            Arc::new(move || ctx.request_repaint()),
+        );
+        let mut app = App {
+            ctx: cc.egui_ctx.clone(),
+            hid,
+            hid_error: None,
+            all_hid: vec![],
+            scanned: false,
+            conn: None,
+            manual_disconnect: false,
+            page: Page::Overview,
+            edit_slot: Slot::Profile(1),
+            ui: UiState {
+                show_physical: false,
+                back_tab: 0,
+                sticks_tab: 0,
+                motion_tab: 0,
+                light_preset: 0,
+                calib_open: false,
+                controllers_only: true,
+                show_tech: false,
+            },
+            probe: ProbeUi::default(),
+            toasts: vec![],
+            shots: shots.map(|dir| Shots {
+                dir,
+                queue: vec![
+                    (Page::Overview, "overview"),
+                    (Page::Buttons, "buttons"),
+                    (Page::Sticks, "sticks"),
+                    (Page::Lighting, "lighting"),
+                    (Page::Devices, "devices"),
+                ],
+                frames: 0,
+                requested: false,
+                done: Default::default(),
+            }),
+        };
+        if mock || app.shots.is_some() {
+            app.connect_mock();
+        }
+        app
+    }
+
+    pub fn toast(&mut self, text: String, warn: bool) {
+        self.toasts.push(Toast {
+            text,
+            warn,
+            at: Instant::now(),
+        });
+    }
+
+    fn notifier(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let ctx = self.ctx.clone();
+        Arc::new(move || ctx.request_repaint())
+    }
+
+    fn new_connected(
+        &self,
+        id: String,
+        title: String,
+        info: Option<&HidInfo>,
+        session: Session,
+    ) -> Connected {
+        Connected {
+            id,
+            title,
+            connection: info.and_then(|i| i.model()).map(|(_, m)| m.connection),
+            session,
+            firmware: None,
+            loaded: HashMap::new(),
+            profiles: HashMap::new(),
+            light: None,
+            current_profile: 1,
+            state: None,
+            pending: 0,
+        }
+    }
+
+    pub fn connect_mock(&mut self) {
+        let s = Session::spawn(Box::new(MockG7::new()), self.notifier());
+        self.conn = Some(self.new_connected(MOCK_PATH.into(), t("device-demo"), None, s));
+        self.manual_disconnect = false;
+    }
+
+    pub fn connect(&mut self, info: &HidInfo) {
+        match self.hid.open(&info.path) {
+            Ok(dev) => {
+                let s = Session::spawn(Box::new(dev), self.notifier());
+                let title = info
+                    .model()
+                    .map(|(m, _)| m.name.to_string())
+                    .unwrap_or_else(|| info.label());
+                self.conn = Some(self.new_connected(info.path.clone(), title, Some(info), s));
+                self.manual_disconnect = false;
+            }
+            Err(e) => self.toast(
+                ta(
+                    "toast-open-failed",
+                    &[("error", FluentValue::from(e.to_string()))],
+                ),
+                true,
+            ),
+        }
+    }
+
+    pub fn disconnect(&mut self) {
+        self.conn = None;
+        self.manual_disconnect = true;
+    }
+
+    pub fn rescan(&mut self) {
+        self.hid.rescan();
+    }
+
+    pub fn config_devices(&self) -> Vec<HidInfo> {
+        self.all_hid
+            .iter()
+            .filter(|d| d.is_config_interface())
+            .cloned()
+            .collect()
+    }
+
+    fn poll(&mut self) {
+        if let Some(scan) = self.hid.latest() {
+            match scan {
+                Ok(list) => {
+                    self.all_hid = list;
+                    self.hid_error = None;
+                }
+                Err(e) => self.hid_error = Some(e),
+            }
+            self.scanned = true;
+            // Drop a connection whose device went away.
+            if let Some(c) = &self.conn
+                && !c.is_mock()
+                && !self.all_hid.iter().any(|d| d.path == c.id)
+            {
+                self.conn = None;
+                self.toast(t("toast-disconnected"), true);
+            }
+            if self.conn.is_none() && !self.manual_disconnect {
+                let supported: Vec<HidInfo> = self
+                    .config_devices()
+                    .into_iter()
+                    .filter(|d| d.model().is_some_and(|(m, _)| m.protocol.is_implemented()))
+                    .collect();
+                if let Some(d) = supported.first() {
+                    let d = d.clone();
+                    self.connect(&d);
+                }
+            }
+        }
+
+        let mut toasts = vec![];
+        let mut lost = false;
+        if let Some(c) = &mut self.conn {
+            let events: Vec<Event> = c.session.events().collect();
+            for e in events {
+                match e {
+                    Event::Firmware { controller, dongle } => {
+                        c.firmware = Some((controller, dongle))
+                    }
+                    Event::SlotLoaded(s, b) => c.take_slot(s, b, false),
+                    Event::SlotChanged(s, b) => {
+                        c.take_slot(s, b, true);
+                        toasts.push((
+                            ta(
+                                "toast-changed-on-device",
+                                &[("slot", FluentValue::from(slot_label(s)))],
+                            ),
+                            false,
+                        ));
+                    }
+                    Event::SlotWritten(s) => toasts.push((
+                        ta("toast-saved", &[("slot", FluentValue::from(slot_label(s)))]),
+                        false,
+                    )),
+                    Event::CurrentProfile(n) => c.current_profile = n,
+                    Event::State(s) => c.state = Some(*s),
+                    Event::Pending(n) => c.pending = n,
+                    Event::StickCenter { ok } => {
+                        if !ok {
+                            toasts.push((t("toast-stick-center-failed"), true));
+                        }
+                    }
+                    Event::UsbModeChanged => {}
+                    Event::Warning(w) => toasts.push((w, true)),
+                    Event::Disconnected(why) => {
+                        toasts.push((ta("toast-lost", &[("error", FluentValue::from(why))]), true));
+                        lost = true;
+                    }
+                }
+            }
+        }
+        if lost {
+            self.conn = None;
+        }
+        for (t, w) in toasts {
+            self.toast(t, w);
+        }
+        self.toasts
+            .retain(|t| t.at.elapsed() < Duration::from_secs(5));
+        self.probe.poll();
+    }
+
+    fn sidebar(&mut self, ui: &mut Ui) {
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            logo(ui, 24.0);
+            ui.label(RichText::new("SirClient").size(19.0).strong());
+        });
+        ui.add_space(14.0);
+        caption(ui, t("sidebar-devices").to_uppercase());
+
+        let devices = self.config_devices();
+        let mut connect_to = None;
+        for d in &devices {
+            let (model, mode) = d.model().unwrap();
+            let selected = self.conn.as_ref().is_some_and(|c| c.id == d.path);
+            let implemented = model.protocol.is_implemented();
+            let sub = if !implemented {
+                t("device-unsupported")
+            } else if let (true, Some(c)) = (selected, &self.conn) {
+                let bat = c
+                    .state
+                    .as_ref()
+                    .map(|s| format!(" · {}%", s.battery))
+                    .unwrap_or_default();
+                format!("{}{}", conn_label(mode.connection), bat)
+            } else {
+                conn_label(mode.connection)
+            };
+            if device_button(ui, selected, model.name, &sub, implemented).clicked()
+                && implemented
+                && !selected
+            {
+                connect_to = Some(d.clone());
+            }
+        }
+        if let Some(d) = connect_to {
+            self.connect(&d);
+        }
+        let mock_selected = self.conn.as_ref().is_some_and(|c| c.is_mock());
+        if device_button(
+            ui,
+            mock_selected,
+            &t("device-demo"),
+            &t("device-demo-sub"),
+            true,
+        )
+        .clicked()
+            && !mock_selected
+        {
+            self.connect_mock();
+        }
+        if devices.is_empty() && !mock_selected {
+            caption(ui, t("device-none"));
+        }
+        if self.conn.is_some() && ui.small_button(t("device-disconnect")).clicked() {
+            self.disconnect();
+        }
+
+        ui.add_space(14.0);
+        caption(ui, t("sidebar-configure").to_uppercase());
+        for (page, key) in [
+            (Page::Overview, "nav-overview"),
+            (Page::Buttons, "nav-buttons"),
+            (Page::Sticks, "nav-sticks"),
+            (Page::Lighting, "nav-lighting"),
+        ] {
+            self.nav_item(ui, page, key);
+        }
+        // Diagnostics live apart from the everyday pages.
+        ui.add_space(14.0);
+        caption(ui, t("sidebar-advanced").to_uppercase());
+        self.nav_item(ui, Page::Devices, "nav-devices");
+
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+            ui.add_space(6.0);
+            caption(
+                ui,
+                format!("v{} · {}", env!("CARGO_PKG_VERSION"), t("app-unofficial")),
+            );
+            let cur = i18n::current();
+            let langs = i18n::available();
+            let cur_name = langs
+                .iter()
+                .find(|(id, _)| *id == cur)
+                .map(|(_, n)| n.clone())
+                .unwrap_or(cur.clone());
+            let mut chosen = None;
+            egui::ComboBox::from_id_salt("lang")
+                .selected_text(cur_name)
+                .width(ui.available_width())
+                .show_ui(ui, |ui| {
+                    for (id, name) in &langs {
+                        if ui.selectable_label(*id == cur, name).clicked() {
+                            chosen = Some(id.clone());
+                        }
+                    }
+                });
+            caption(ui, t("sidebar-language"));
+            if let Some(id) = chosen {
+                i18n::set(&id);
+            }
+        });
+    }
+
+    fn nav_item(&mut self, ui: &mut Ui, page: Page, key: &str) {
+        let sel = self.page == page;
+        let text = RichText::new(t(key)).color(if sel { TEXT } else { TEXT_2 });
+        let b = egui::Button::new(text)
+            .fill(if sel {
+                SELECTED
+            } else {
+                egui::Color32::TRANSPARENT
+            })
+            .stroke(egui::Stroke::NONE)
+            .min_size(egui::vec2(ui.available_width(), 34.0));
+        if ui.add(b).clicked() {
+            self.page = page;
+        }
+    }
+
+    fn header(&mut self, ui: &mut Ui) {
+        let (title, subtitle) = match self.page {
+            Page::Overview => (t("nav-overview"), None),
+            Page::Buttons => (t("nav-buttons"), None),
+            Page::Sticks => (t("nav-sticks"), None),
+            Page::Lighting => (t("nav-lighting"), Some(t("lighting-subtitle"))),
+            Page::Devices => (t("nav-devices"), Some(t("devices-subtitle"))),
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.vertical(|ui| {
+                ui.label(RichText::new(title).size(26.0).strong());
+                let sub = subtitle.unwrap_or_else(|| match &self.conn {
+                    Some(c) => {
+                        let mut s = c.title.clone();
+                        let dirty = c.dirty_slots().len();
+                        if dirty > 0 {
+                            s.push_str(" · ");
+                            s.push_str(&ta(
+                                "unsaved-changes",
+                                &[("count", FluentValue::from(dirty))],
+                            ));
+                        }
+                        s
+                    }
+                    None => t("no-device"),
+                });
+                ui.label(RichText::new(sub).color(MUTED));
+            });
+            if self.page == Page::Devices {
+                return;
+            }
+            let Some(c) = &mut self.conn else { return };
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let dirty = !c.dirty_slots().is_empty();
+                if primary_button(ui, dirty, t("apply")).clicked() {
+                    c.apply();
+                }
+                if ui
+                    .add_enabled(dirty, egui::Button::new(t("revert")))
+                    .clicked()
+                {
+                    c.revert();
+                }
+                if c.pending > 0 {
+                    ui.spinner();
+                }
+                if self.page != Page::Lighting {
+                    ui.add_space(12.0);
+                    for slot in [
+                        Slot::Shift,
+                        Slot::Profile(4),
+                        Slot::Profile(3),
+                        Slot::Profile(2),
+                        Slot::Profile(1),
+                    ] {
+                        let active_on_device =
+                            matches!(slot, Slot::Profile(n) if n == c.current_profile);
+                        let mut label = slot_label(slot);
+                        if active_on_device {
+                            label.push_str(ACTIVE_MARK);
+                        }
+                        if pill(ui, self.edit_slot == slot, label).clicked() {
+                            self.edit_slot = slot;
+                            if let Slot::Profile(_) = slot {
+                                c.session.send(Request::SwitchProfile(slot));
+                            }
+                        }
+                    }
+                }
+            });
+        });
+    }
+
+    fn toasts_ui(&self, ui: &mut Ui) {
+        if self.toasts.is_empty() {
+            return;
+        }
+        egui::Area::new(egui::Id::unique("sirclient-toasts"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
+            .show(ui.ctx(), |ui| {
+                for t in &self.toasts {
+                    egui::Frame::new()
+                        .fill(SURFACE)
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            if t.warn { WARN } else { BORDER_STRONG },
+                        ))
+                        .corner_radius(egui::CornerRadius::same(8))
+                        .inner_margin(egui::Margin::symmetric(12, 8))
+                        .show(ui, |ui| ui.label(&t.text));
+                }
+            });
+    }
+}
+
+impl App {
+    fn screenshots(&mut self, ctx: &egui::Context) {
+        let Some(sh) = &mut self.shots else { return };
+        let Some(&(page, name)) = sh.queue.first() else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        };
+        self.page = page;
+        ctx.request_repaint();
+        if sh.done.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            sh.queue.remove(0);
+            sh.frames = 0;
+            sh.requested = false;
+            return;
+        }
+        sh.frames += 1;
+        // Give the session time to load and the live view to settle.
+        if sh.frames > 45 && !sh.requested {
+            sh.requested = true;
+            let path = sh.dir.join(format!("{name}.png"));
+            let done = sh.done.clone();
+            let ctx2 = ctx.clone();
+            ctx.request_screenshot(move |img| {
+                let [w, h] = img.size;
+                let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+                match image::save_buffer(
+                    &path,
+                    &rgba,
+                    w as u32,
+                    h as u32,
+                    image::ExtendedColorType::Rgba8,
+                ) {
+                    Ok(()) => log::info!("saved {}", path.display()),
+                    Err(e) => log::error!("saving {}: {e}", path.display()),
+                }
+                done.store(true, std::sync::atomic::Ordering::SeqCst);
+                ctx2.request_repaint();
+            });
+        }
+    }
+}
+
+pub fn slot_label(s: Slot) -> String {
+    match s {
+        Slot::Profile(n) => ta("profile-n", &[("n", FluentValue::from(n))]),
+        Slot::Shift => t("profile-shift"),
+        Slot::Light => t("nav-lighting"),
+    }
+}
+
+pub fn conn_label(c: Connection) -> String {
+    match c {
+        Connection::Wired => t("conn-wired"),
+        Connection::Wireless => t("conn-wireless"),
+    }
+}
+
+fn device_button(
+    ui: &mut Ui,
+    selected: bool,
+    title: &str,
+    sub: &str,
+    enabled: bool,
+) -> egui::Response {
+    let frame = egui::Frame::new()
+        .fill(if selected {
+            egui::Color32::from_rgb(0x1F, 0x29, 0x37)
+        } else {
+            egui::Color32::TRANSPARENT
+        })
+        .stroke(egui::Stroke::new(
+            1.0,
+            if selected {
+                egui::Color32::from_rgb(0x3B, 0x5B, 0x92)
+            } else {
+                BORDER_STRONG
+            },
+        ))
+        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::same(10));
+    let r = frame
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(
+                RichText::new(title)
+                    .strong()
+                    .color(if enabled { TEXT } else { FAINT }),
+            );
+            ui.label(RichText::new(sub).size(12.0).color(MUTED));
+        })
+        .response;
+    ui.interact(
+        r.rect,
+        ui.scope_id().with(("devbtn", title, sub)),
+        egui::Sense::click(),
+    )
+}
+
+impl eframe::App for App {
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        self.poll();
+        // Live input animates; keep repainting while connected.
+        if self.conn.is_some() {
+            ui.ctx().request_repaint_after(Duration::from_millis(33));
+        } else {
+            ui.ctx().request_repaint_after(Duration::from_secs(1));
+        }
+
+        egui::Panel::left("sidebar")
+            .exact_size(250.0)
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(SURFACE)
+                    .inner_margin(egui::Margin::symmetric(14, 16))
+                    .stroke(egui::Stroke::new(1.0, BORDER)),
+            )
+            .show(ui, |ui| self.sidebar(ui));
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin {
+                left: 28,
+                right: 28,
+                top: 22,
+                bottom: 22,
+            }))
+            .show(ui, |ui| {
+                self.header(ui);
+                ui.add_space(14.0);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| match self.page {
+                        Page::Devices => pages::devices::show(ui, self),
+                        page => {
+                            let Some(c) = self.conn.as_mut() else {
+                                pages::empty_state(ui);
+                                return;
+                            };
+                            if !c.loaded_all() {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.label(t("loading"));
+                                });
+                                return;
+                            }
+                            match page {
+                                Page::Overview => {
+                                    pages::overview::show(ui, c, self.edit_slot, &mut self.ui)
+                                }
+                                Page::Buttons => {
+                                    pages::buttons::show(ui, c, self.edit_slot, &mut self.ui)
+                                }
+                                Page::Sticks => {
+                                    pages::sticks::show(ui, c, self.edit_slot, &mut self.ui)
+                                }
+                                Page::Lighting => pages::lighting::show(ui, c, &mut self.ui),
+                                Page::Devices => unreachable!(),
+                            }
+                        }
+                    });
+            });
+        self.toasts_ui(ui);
+        self.screenshots(ui.ctx());
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        storage.set_string("language", i18n::current());
+    }
+}
