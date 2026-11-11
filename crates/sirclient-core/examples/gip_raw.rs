@@ -2,7 +2,7 @@
 //! libusb, print its descriptors and configuration, then log every packet
 //! it sends while a few init messages go out.
 //!
-//!     cargo run -p sirclient-core --example gip_raw [--set-config] [--no-power-on]
+//!     cargo run -p sirclient-core --example gip_raw [--reset] [--set-config] [--no-power-on]
 
 use std::time::{Duration, Instant};
 
@@ -14,6 +14,7 @@ const PIDS: [u16; 2] = [0x10BA, 0x10BB];
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let set_config = args.iter().any(|a| a == "--set-config");
+    let reset = args.iter().any(|a| a == "--reset");
     let power_on = !args.iter().any(|a| a == "--no-power-on");
 
     let ctx = rusb::Context::new().expect("libusb");
@@ -71,7 +72,28 @@ fn main() {
         }
     }
 
-    let h = dev.open().expect("open");
+    let mut h = dev.open().expect("open");
+    if reset {
+        // A fresh enumeration makes the pad send its GIP announce again.
+        println!("reset: {:?}", h.reset());
+        drop(h);
+        std::thread::sleep(Duration::from_millis(1500));
+        let dev = ctx
+            .devices()
+            .expect("device list")
+            .iter()
+            .find(|d| {
+                d.device_descriptor()
+                    .is_ok_and(|dd| dd.vendor_id() == VID && PIDS.contains(&dd.product_id()))
+            })
+            .expect("pad gone after reset");
+        println!(
+            "after reset: bus {} addr {}",
+            dev.bus_number(),
+            dev.address()
+        );
+        h = dev.open().expect("open after reset");
+    }
     println!("active configuration: {:?}", h.active_configuration());
     if set_config {
         println!(
@@ -96,6 +118,7 @@ fn main() {
         let end = Instant::now() + Duration::from_millis(ms);
         let mut buf = [0u8; 64];
         let mut n_state = 0;
+        let mut timeouts = 0;
         while Instant::now() < end {
             match h.read_interrupt(0x82, &mut buf, Duration::from_millis(100)) {
                 Ok(n) => {
@@ -123,7 +146,7 @@ fn main() {
                         println!("> ack {:02x?} -> {r:?}", ack);
                     }
                 }
-                Err(rusb::Error::Timeout) => {}
+                Err(rusb::Error::Timeout) => timeouts += 1,
                 Err(e) => {
                     println!("read error: {e}");
                     std::thread::sleep(Duration::from_millis(100));
@@ -133,6 +156,7 @@ fn main() {
         if n_state > 2 {
             println!("  (+{} more state packets)", n_state - 2);
         }
+        println!("  ({timeouts} empty 100 ms reads)");
     };
 
     println!("-- listening before any message");
