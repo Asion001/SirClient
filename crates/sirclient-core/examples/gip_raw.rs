@@ -2,7 +2,10 @@
 //! libusb, print its descriptors and configuration, then log every packet
 //! it sends while a few init messages go out.
 //!
-//!     cargo run -p sirclient-core --example gip_raw [--reset] [--set-config] [--no-power-on]
+//!     cargo run -p sirclient-core --example gip_raw [--wait] [--reset] [--set-config] [--no-power-on]
+//!
+//! `--wait` waits up to 60 s for the pad to appear in GIP mode (plug the
+//! dongle in while it waits) and sends the init right away.
 
 use std::time::{Duration, Instant};
 
@@ -15,6 +18,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let set_config = args.iter().any(|a| a == "--set-config");
     let reset = args.iter().any(|a| a == "--reset");
+    let wait = args.iter().any(|a| a == "--wait");
     let power_on = !args.iter().any(|a| a == "--no-power-on");
 
     let ctx = rusb::Context::new().expect("libusb");
@@ -30,6 +34,23 @@ fn main() {
             .unwrap_or_default()
     };
     let mut from_fallback = false;
+    if wait {
+        println!("waiting for 3537:10BA/10BB (plug the dongle in now)...");
+        let t0 = Instant::now();
+        let mut last = Vec::new();
+        while t0.elapsed() < Duration::from_secs(60) {
+            let p = pids_now(&ctx);
+            if p != last {
+                println!("  {:>5} ms: {p:04x?}", t0.elapsed().as_millis());
+                last = p.clone();
+            }
+            if p.iter().any(|x| PIDS.contains(x)) {
+                from_fallback = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
     let now = pids_now(&ctx);
     println!("GameSir PIDs now: {now:04x?}");
     if !now.iter().any(|p| PIDS.contains(p)) && now.contains(&0x1022) {
