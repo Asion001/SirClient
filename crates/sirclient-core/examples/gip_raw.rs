@@ -23,6 +23,10 @@ fn main() {
     let reset = args.iter().any(|a| a == "--reset");
     let wait = args.iter().any(|a| a == "--wait");
     let hold = args.iter().any(|a| a == "--hold");
+    // Reply to the pad's announce the way an Xbox host does.
+    let on_announce = args.iter().any(|a| a == "--on-announce");
+    let identify = args.iter().any(|a| a == "--identify");
+    let led = args.iter().any(|a| a == "--led");
     let power_on = !args.iter().any(|a| a == "--no-power-on");
 
     let ctx = rusb::Context::new().expect("libusb");
@@ -277,6 +281,29 @@ fn main() {
                             0x01, 0x20, p[2], 0x09, 0x00, p[0], 0x20, p[3], 0, 0, 0, 0, 0,
                         ];
                         let _ = h.write_interrupt(0x02, &ack, Duration::from_millis(200));
+                    }
+                    if p[0] == 0x02 && n >= 4 && (on_announce || identify || led) {
+                        let mut out: Vec<(&str, Vec<u8>)> = Vec::new();
+                        if identify {
+                            out.push(("identify", vec![0x04, 0x20, 0, 0x00]));
+                        }
+                        if on_announce {
+                            out.push(("power on", vec![0x05, 0x20, 0, 0x01, 0x00]));
+                        }
+                        if led {
+                            out.push(("led on", vec![0x0A, 0x20, 0, 0x03, 0x00, 0x01, 0x14]));
+                        }
+                        out.push(("F2 01", cmd(&[0xF2, 0x01])));
+                        for (label, mut q) in out {
+                            seq = seq.wrapping_add(1).max(1);
+                            q[2] = seq;
+                            let r = h.write_interrupt(0x02, &q, Duration::from_millis(200));
+                            println!(
+                                "{:>5} ms > {label} {:02x?} -> {r:?}",
+                                t0.elapsed().as_millis(),
+                                &q[..q.len().min(8)]
+                            );
+                        }
                     }
                     let is_state = (p[0] == 0x10 && p.get(4) == Some(&0xE0)) || p[0] == 0x20;
                     if is_state {
