@@ -17,6 +17,38 @@ pub const PROFILE_LEN: usize = 1070;
 /// Size of the lighting profile.
 pub const LIGHT_PROFILE_LEN: usize = 165;
 
+/// Sizes that differ between the HID G7 Pro 8K and the Xbox edition
+/// (which tunnels the same commands through GIP message `0x0F`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Geometry {
+    pub profile_len: usize,
+    pub light_len: usize,
+    /// Payload bytes per read/write chunk.
+    pub chunk: usize,
+}
+
+impl Geometry {
+    /// G7 Pro 8K over HID.
+    pub const HID: Geometry = Geometry {
+        profile_len: PROFILE_LEN,
+        light_len: LIGHT_PROFILE_LEN,
+        chunk: CHUNK,
+    };
+    /// G7 Pro XBox over GIP: 60-byte payloads, 5 header bytes.
+    pub const GIP: Geometry = Geometry {
+        profile_len: 480,
+        light_len: 511,
+        chunk: 55,
+    };
+
+    pub fn slot_len(self, slot: Slot) -> usize {
+        match slot {
+            Slot::Light => self.light_len,
+            _ => self.profile_len,
+        }
+    }
+}
+
 /// Profile slots understood by the firmware.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Slot {
@@ -131,11 +163,22 @@ pub fn switch_profile(slot: Slot) -> Vec<u8> {
 
 /// Commands that read `len` bytes of a slot starting at `offset`.
 pub fn read_range(command: u8, slot: Slot, offset: usize, len: usize) -> Vec<Vec<u8>> {
+    read_range_in(Geometry::HID, command, slot, offset, len)
+}
+
+/// [`read_range`] for a given device geometry.
+pub fn read_range_in(
+    geo: Geometry,
+    command: u8,
+    slot: Slot,
+    offset: usize,
+    len: usize,
+) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let mut pos = 0;
     while pos < len {
         let off = offset + pos;
-        let n = (len - pos).min(CHUNK);
+        let n = (len - pos).min(geo.chunk);
         out.push(vec![
             REPORT_ID,
             command,
@@ -151,15 +194,25 @@ pub fn read_range(command: u8, slot: Slot, offset: usize, len: usize) -> Vec<Vec
 
 /// Commands that read a whole slot.
 pub fn read_slot(slot: Slot) -> Vec<Vec<u8>> {
-    read_range(cmd::READ_PROFILE, slot, 0, slot.len())
+    read_slot_in(Geometry::HID, slot)
+}
+
+/// [`read_slot`] for a given device geometry.
+pub fn read_slot_in(geo: Geometry, slot: Slot) -> Vec<Vec<u8>> {
+    read_range_in(geo, cmd::READ_PROFILE, slot, 0, geo.slot_len(slot))
 }
 
 /// Commands that write `data` into a slot starting at `offset`.
 pub fn write_range(slot: Slot, offset: usize, data: &[u8]) -> Vec<Vec<u8>> {
-    data.chunks(CHUNK)
+    write_range_in(Geometry::HID, slot, offset, data)
+}
+
+/// [`write_range`] for a given device geometry.
+pub fn write_range_in(geo: Geometry, slot: Slot, offset: usize, data: &[u8]) -> Vec<Vec<u8>> {
+    data.chunks(geo.chunk)
         .enumerate()
         .map(|(i, chunk)| {
-            let off = offset + i * CHUNK;
+            let off = offset + i * geo.chunk;
             let mut p = vec![
                 REPORT_ID,
                 cmd::WRITE_PROFILE,
@@ -343,6 +396,18 @@ pub fn parse_reply(r: &[u8]) -> Option<Reply> {
             let (slot, offset, data) = data_reply(r);
             Reply::RefreshData { slot, offset, data }
         }
+        // The Xbox edition answers with UTF-16 digits: "0249" "0153".
+        reply::FIRMWARE if at(3) == 0 && at(2).is_ascii_digit() => {
+            let digits: Vec<u8> = r[2..].chunks(2).map(|c| c[0]).take(8).collect();
+            let trim = |d: &[u8]| {
+                let start = d.iter().position(|&b| b != b'0').unwrap_or(d.len());
+                version(&d[start..])
+            };
+            Reply::Firmware {
+                controller: trim(&digits[..digits.len().min(4)]),
+                dongle: trim(digits.get(4..).unwrap_or(&[])),
+            }
+        }
         reply::FIRMWARE => Reply::Firmware {
             controller: version(r.get(4..9).unwrap_or(&[])),
             dongle: version(r.get(12..17).unwrap_or(&[])),
@@ -401,6 +466,33 @@ mod tests {
                 dongle: "1.3.4".into()
             })
         );
+    }
+
+    #[test]
+    fn parse_xbox_firmware() {
+        // GIP reply payload behind report byte 0x10, as GipLink delivers it.
+        let mut r = vec![0x10, reply::FIRMWARE];
+        r.extend("02490153".encode_utf16().flat_map(|c| c.to_le_bytes()));
+        r.resize(61, 0);
+        assert_eq!(
+            parse_reply(&r),
+            Some(Reply::Firmware {
+                controller: "2.4.9".into(),
+                dongle: "1.5.3".into()
+            })
+        );
+    }
+
+    #[test]
+    fn gip_chunks() {
+        let cmds = read_slot_in(Geometry::GIP, Slot::Profile(1));
+        assert_eq!(cmds.len(), 9);
+        assert_eq!(&cmds[0][..6], &[0x0F, 0x04, 1, 0, 0, 55]);
+        let last = cmds.last().unwrap();
+        assert_eq!(&last[..6], &[0x0F, 0x04, 1, 0x01, 0xB8, 40]);
+        let w = write_range_in(Geometry::GIP, Slot::Light, 0, &[1u8; 60]);
+        assert_eq!(w.len(), 2);
+        assert_eq!(w[1][5], 5);
     }
 
     #[test]

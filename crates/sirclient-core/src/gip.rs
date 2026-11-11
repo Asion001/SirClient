@@ -1,0 +1,330 @@
+//! Xbox-edition controllers over raw USB (Xbox Game Input Protocol).
+//!
+//! The G7 Pro XBox is a licensed Xbox controller. Its "app mode" shows up as
+//! `3537:10BA` (cable) or `3537:10BB` (dongle) with a vendor-class GIP
+//! interface, which Linux binds to `xpad`. GameSir Nexus configures it by
+//! sending GIP message `0x0F` whose payload is the same command set the
+//! G7 Pro 8K uses over HID (`[cmd, slot, offset hi, offset lo, len, data]`,
+//! padded to 60 bytes). Replies come back as GIP message `0x10` with a
+//! 60-byte payload laid out like the HID replies.
+//!
+//! Two quirks matter on Linux:
+//!
+//! * Shortly after the pad links, the dongle drops to a plain HID mode
+//!   (`3537:1022`) unless the host sends the `0xF2` "app present" command,
+//!   which Nexus does on connect. [`GipLink::open`] sends it right away and
+//!   the session heartbeat keeps sending it.
+//! * From the HID fallback a USB port reset brings the dongle back into
+//!   GIP mode without replugging; [`GipLink::open`] does that when needed.
+//!
+//! While SirClient holds the interface, `xpad` is detached, so the pad does
+//! not work as a gamepad; it is reattached when the link is dropped.
+
+use crate::Error;
+use crate::transport::{Bus, HidInfo};
+
+/// Product IDs of the G7 Pro XBox in GIP (app) mode.
+pub const GIP_PIDS: [u16; 2] = [0x10BA, 0x10BB];
+/// Product ID of its plain-HID fallback mode.
+pub const HID_FALLBACK_PID: u16 = 0x1022;
+
+/// Device paths for GIP devices start with this prefix.
+pub const PATH_PREFIX: &str = "gip:";
+
+/// GIP message carrying a configuration command (host to device).
+const MSG_COMMAND: u8 = 0x0F;
+/// GIP message carrying a configuration reply (device to host).
+const MSG_REPLY: u8 = 0x10;
+/// Payload size of command and reply messages.
+const PAYLOAD: usize = 60;
+/// Reply type the firmware streams continuously (raw sensor/stick data).
+const SENSOR_STREAM: u8 = 0xE0;
+
+pub fn is_gip_path(path: &str) -> bool {
+    path.starts_with(PATH_PREFIX)
+}
+
+/// Wrap a HID-style command report (`[0x0F, cmd, ...]`, any length) into a
+/// GIP command message.
+pub fn encode_command(report: &[u8], seq: u8) -> [u8; 4 + PAYLOAD] {
+    let mut out = [0u8; 4 + PAYLOAD];
+    out[0] = MSG_COMMAND;
+    out[1] = 0x00;
+    out[2] = seq;
+    out[3] = PAYLOAD as u8;
+    let body = report.get(1..).unwrap_or(&[]);
+    let n = body.len().min(PAYLOAD);
+    out[4..4 + n].copy_from_slice(&body[..n]);
+    out
+}
+
+/// Turn a GIP reply message into the HID-style report the session parses
+/// (`[0x10, reply code, ...]`). Returns `None` for anything else.
+pub fn decode_reply(packet: &[u8]) -> Option<Vec<u8>> {
+    if packet.len() < 5 || packet[0] != MSG_REPLY {
+        return None;
+    }
+    let len = (packet[3] as usize).min(packet.len() - 4);
+    let payload = &packet[4..4 + len];
+    if payload.first() == Some(&SENSOR_STREAM) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(1 + len);
+    out.push(MSG_REPLY);
+    out.extend_from_slice(payload);
+    Some(out)
+}
+
+/// GIP acknowledgement for a packet that asked for one (flag `0x10`).
+fn ack_for(packet: &[u8]) -> Option<[u8; 13]> {
+    if packet.len() < 4 || packet[1] & 0x10 == 0 {
+        return None;
+    }
+    Some([
+        0x01, 0x20, packet[2], 0x09, 0x00, packet[0], 0x20, packet[3], 0, 0, 0, 0, 0,
+    ])
+}
+
+#[cfg(target_os = "linux")]
+mod imp {
+    use std::time::{Duration, Instant};
+
+    use rusb::{DeviceHandle, GlobalContext, UsbContext};
+
+    use super::*;
+    use crate::protocol::g7pro::commands::Geometry;
+    use crate::registry::GAMESIR_VID;
+    use crate::session::Link;
+
+    const IFACE: u8 = 0;
+    const EP_OUT: u8 = 0x02;
+    const EP_IN: u8 = 0x82;
+
+    fn usb(e: rusb::Error) -> Error {
+        Error::Usb(e.to_string())
+    }
+
+    fn path_of(d: &rusb::Device<GlobalContext>) -> String {
+        format!("{PATH_PREFIX}{:03}:{:03}", d.bus_number(), d.address())
+    }
+
+    fn find(pids: &[u16]) -> Option<rusb::Device<GlobalContext>> {
+        rusb::GlobalContext::default()
+            .devices()
+            .ok()?
+            .iter()
+            .find(|d| {
+                d.device_descriptor().is_ok_and(|dd| {
+                    dd.vendor_id() == GAMESIR_VID && pids.contains(&dd.product_id())
+                })
+            })
+    }
+
+    /// GIP-mode GameSir devices, as entries for the device list.
+    pub fn enumerate() -> Vec<HidInfo> {
+        let Ok(list) = rusb::GlobalContext::default().devices() else {
+            return vec![];
+        };
+        list.iter()
+            .filter_map(|d| {
+                let dd = d.device_descriptor().ok()?;
+                (dd.vendor_id() == GAMESIR_VID && GIP_PIDS.contains(&dd.product_id())).then(|| {
+                    HidInfo {
+                        path: path_of(&d),
+                        vid: dd.vendor_id(),
+                        pid: dd.product_id(),
+                        usage_page: 0,
+                        usage: 0,
+                        interface: IFACE as i32,
+                        bus: Bus::Usb,
+                        manufacturer: "GameSir".into(),
+                        product: "GameSir-G7 Pro".into(),
+                        serial: String::new(),
+                    }
+                })
+            })
+            .collect()
+    }
+
+    /// Reset a controller sitting in the HID fallback so it comes back in
+    /// GIP mode. Returns once a GIP device shows up (or after `wait`).
+    pub fn reset_hid_fallback(wait: Duration) -> Result<bool, Error> {
+        let Some(dev) = find(&[HID_FALLBACK_PID]) else {
+            return Ok(false);
+        };
+        let h = dev.open().map_err(usb)?;
+        // Re-enumeration makes the reset report "not found"; that is fine.
+        let _ = h.reset();
+        drop(h);
+        let end = Instant::now() + wait;
+        while Instant::now() < end {
+            if find(&GIP_PIDS).is_some() {
+                return Ok(true);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Ok(false)
+    }
+
+    pub struct GipLink {
+        handle: DeviceHandle<GlobalContext>,
+        reattach: bool,
+        seq: u8,
+        path: String,
+        pending: std::collections::VecDeque<Vec<u8>>,
+    }
+
+    impl GipLink {
+        /// Open the first G7 Pro XBox in GIP mode, resetting it out of the
+        /// HID fallback first if that is how it is connected.
+        pub fn open() -> Result<GipLink, Error> {
+            if find(&GIP_PIDS).is_none() {
+                reset_hid_fallback(Duration::from_secs(5))?;
+            }
+            let dev = find(&GIP_PIDS)
+                .ok_or_else(|| Error::Usb("no G7 Pro XBox in app (GIP) mode found".into()))?;
+            let path = path_of(&dev);
+            let handle = dev.open().map_err(usb)?;
+            // xpad may still be probing right after enumeration: retry.
+            let mut reattach = false;
+            let end = Instant::now() + Duration::from_secs(2);
+            loop {
+                let r = (|| {
+                    if handle.kernel_driver_active(IFACE).unwrap_or(false) {
+                        handle.detach_kernel_driver(IFACE)?;
+                        reattach = true;
+                    }
+                    handle.claim_interface(IFACE)
+                })();
+                match r {
+                    Ok(()) => break,
+                    Err(rusb::Error::Busy) if Instant::now() < end => {
+                        std::thread::sleep(Duration::from_millis(25))
+                    }
+                    Err(e) => return Err(usb(e)),
+                }
+            }
+            let mut link = GipLink {
+                handle,
+                reattach,
+                seq: 0,
+                path,
+                pending: Default::default(),
+            };
+            // Tell the firmware a configurator is attached before the dongle
+            // gives up on GIP mode.
+            link.write(&[0x0F, 0xF2, 0x01])?;
+            log::info!("opened G7 Pro XBox over GIP at {}", link.path);
+            Ok(link)
+        }
+
+        pub fn path(&self) -> &str {
+            &self.path
+        }
+
+        fn next_seq(&mut self) -> u8 {
+            self.seq = self.seq.wrapping_add(1).max(1);
+            self.seq
+        }
+    }
+
+    impl Link for GipLink {
+        fn write(&mut self, report: &[u8]) -> Result<(), Error> {
+            let seq = self.next_seq();
+            let pkt = encode_command(report, seq);
+            self.handle
+                .write_interrupt(EP_OUT, &pkt, Duration::from_millis(200))
+                .map_err(usb)?;
+            Ok(())
+        }
+
+        fn read(&mut self, buf: &mut [u8], timeout_ms: i32) -> Result<usize, Error> {
+            if let Some(r) = self.pending.pop_front() {
+                let n = r.len().min(buf.len());
+                buf[..n].copy_from_slice(&r[..n]);
+                return Ok(n);
+            }
+            let end = Instant::now() + Duration::from_millis(timeout_ms.max(1) as u64);
+            let mut pkt = [0u8; 64];
+            loop {
+                let left = end.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Ok(0);
+                }
+                let n = match self.handle.read_interrupt(EP_IN, &mut pkt, left) {
+                    Ok(n) => n,
+                    Err(rusb::Error::Timeout) => return Ok(0),
+                    Err(e) => return Err(usb(e)),
+                };
+                let p = &pkt[..n];
+                if let Some(a) = ack_for(p) {
+                    let _ = self
+                        .handle
+                        .write_interrupt(EP_OUT, &a, Duration::from_millis(100));
+                }
+                if let Some(r) = decode_reply(p) {
+                    let n = r.len().min(buf.len());
+                    buf[..n].copy_from_slice(&r[..n]);
+                    return Ok(n);
+                }
+            }
+        }
+
+        fn geometry(&self) -> Geometry {
+            Geometry::GIP
+        }
+    }
+
+    impl Drop for GipLink {
+        fn drop(&mut self) {
+            let _ = self.handle.release_interface(IFACE);
+            if self.reattach {
+                let _ = self.handle.attach_kernel_driver(IFACE);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub use imp::{GipLink, enumerate, reset_hid_fallback};
+
+/// GIP devices are driven by the OS outside Linux.
+#[cfg(not(target_os = "linux"))]
+pub fn enumerate() -> Vec<HidInfo> {
+    vec![]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_framing() {
+        let p = encode_command(&[0x0F, 0x04, 0x01, 0x00, 0x37, 0x37], 9);
+        assert_eq!(
+            &p[..10],
+            &[0x0F, 0x00, 9, 60, 0x04, 0x01, 0x00, 0x37, 0x37, 0]
+        );
+        assert_eq!(p.len(), 64);
+    }
+
+    #[test]
+    fn reply_framing() {
+        let mut pkt = vec![0x10, 0x00, 0x20, 0x3C, 0x0C, 0x03];
+        pkt.resize(64, 0);
+        let r = decode_reply(&pkt).unwrap();
+        assert_eq!(&r[..3], &[0x10, 0x0C, 0x03]);
+        assert_eq!(r.len(), 61);
+        let mut sensor = pkt.clone();
+        sensor[4] = 0xE0;
+        assert!(decode_reply(&sensor).is_none());
+        assert!(decode_reply(&[0x20, 0x00, 0x01, 0x0e]).is_none());
+    }
+
+    #[test]
+    fn ack() {
+        assert!(ack_for(&[0x02, 0x20, 0x01, 0x1c]).is_none());
+        let a = ack_for(&[0x02, 0x30, 0x05, 0x1c]).unwrap();
+        assert_eq!(&a[..8], &[0x01, 0x20, 0x05, 0x09, 0x00, 0x02, 0x20, 0x1c]);
+    }
+}

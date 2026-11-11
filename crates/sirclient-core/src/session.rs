@@ -14,7 +14,7 @@ use crossbeam_channel::{Receiver, Sender, TryRecvError, unbounded};
 
 use crate::Error;
 use crate::protocol::g7pro::commands::{
-    self, CURRENT_PROFILE_MARKER, CalibrationPart, Nudge, Reply, Slot, StickSide, cmd,
+    self, CURRENT_PROFILE_MARKER, CalibrationPart, Geometry, Nudge, Reply, Slot, StickSide, cmd,
 };
 use crate::protocol::g7pro::state::State;
 use crate::transport::{REPORT_LEN, pad_report};
@@ -34,6 +34,10 @@ pub trait Link: Send {
     /// the link shares a stream with other collections. `None` = accept all.
     fn config_report_ids(&self) -> Option<Vec<u8>> {
         None
+    }
+    /// Profile sizes and chunking used by the device behind this link.
+    fn geometry(&self) -> Geometry {
+        Geometry::HID
     }
 }
 
@@ -204,6 +208,7 @@ struct Worker {
     last_pending: usize,
     /// Report IDs of the configuration collection; others are ignored.
     accept: Option<Vec<u8>>,
+    geo: Geometry,
 }
 
 impl Worker {
@@ -215,9 +220,11 @@ impl Worker {
     ) -> Self {
         let now = Instant::now();
         let accept = link.config_report_ids();
-        log::info!("configuration report ids: {accept:02x?}");
+        let geo = link.geometry();
+        log::info!("configuration report ids: {accept:02x?}, geometry {geo:?}");
         Worker {
             accept,
+            geo,
             link,
             req,
             ev,
@@ -247,15 +254,17 @@ impl Worker {
             Request::Reload => {
                 self.enqueue(commands::read_firmware());
                 for slot in Slot::ALL {
-                    self.loading.insert(slot.number(), vec![0; slot.len()]);
-                    for c in commands::read_slot(slot) {
+                    let len = self.geo.slot_len(slot);
+                    self.loading.insert(slot.number(), vec![0; len]);
+                    for c in commands::read_slot_in(self.geo, slot) {
                         self.enqueue(c);
                     }
                 }
                 self.enqueue(commands::read_current_profile());
             }
             Request::WriteSlot(slot, new) => {
-                if new.len() != slot.len() {
+                let slot_len = self.geo.slot_len(slot);
+                if new.len() != slot_len {
                     self.emit(Event::Warning(format!(
                         "{} has wrong size {}",
                         slot.label(),
@@ -267,12 +276,12 @@ impl Worker {
                     .cache
                     .get(&slot.number())
                     .cloned()
-                    .unwrap_or_else(|| vec![0; slot.len()]);
+                    .unwrap_or_else(|| vec![0; slot_len]);
                 let first = (0..new.len()).find(|&i| new[i] != old[i]);
                 let last = (0..new.len()).rev().find(|&i| new[i] != old[i]);
                 if let (Some(a), Some(b)) = (first, last) {
                     log::debug!("write {} [{a:#x}..={b:#x}]", slot.label());
-                    let cmds = commands::write_range(slot, a, &new[a..=b]);
+                    let cmds = commands::write_range_in(self.geo, slot, a, &new[a..=b]);
                     let n = cmds.len();
                     for (i, c) in cmds.into_iter().enumerate() {
                         let mut o = Outgoing::new(c);
@@ -443,11 +452,16 @@ impl Worker {
                 if slot == CURRENT_PROFILE_MARKER {
                     self.enqueue(commands::read_current_profile());
                 } else if let Some(s) = Slot::from_number(slot) {
-                    let end = (offset + len).min(s.len());
+                    let end = (offset + len).min(self.geo.slot_len(s));
                     if end > offset {
                         self.refresh_end.insert(slot, end);
-                        for c in commands::read_range(cmd::REFRESH_PROFILE, s, offset, end - offset)
-                        {
+                        for c in commands::read_range_in(
+                            self.geo,
+                            cmd::REFRESH_PROFILE,
+                            s,
+                            offset,
+                            end - offset,
+                        ) {
                             self.enqueue(c);
                         }
                     }
@@ -463,15 +477,16 @@ impl Worker {
         let Some(slot) = Slot::from_number(slot_no) else {
             return;
         };
+        let slot_len = self.geo.slot_len(slot);
         let end = offset + data.len();
-        if end > slot.len() {
+        if end > slot_len {
             return;
         }
         if refresh {
             let cached = self
                 .cache
                 .entry(slot_no)
-                .or_insert_with(|| vec![0; slot.len()]);
+                .or_insert_with(|| vec![0; slot_len]);
             cached[offset..end].copy_from_slice(data);
             if self.refresh_end.get(&slot_no) == Some(&end) {
                 self.refresh_end.remove(&slot_no);
@@ -480,7 +495,7 @@ impl Worker {
             }
         } else if let Some(buf) = self.loading.get_mut(&slot_no) {
             buf[offset..end].copy_from_slice(data);
-            if end == slot.len() {
+            if end == slot_len {
                 let bytes = self.loading.remove(&slot_no).unwrap();
                 self.cache.insert(slot_no, bytes.clone());
                 self.emit(Event::SlotLoaded(slot, bytes));

@@ -24,11 +24,16 @@ GameSir Connect 1.14.5 and matches [`registry.rs`](../crates/sirclient-core/src/
 | T3XS | T3XS | Detected; vendor DLL protocol, needs research | Wired | `0x105A` | `0xFFFF` |
 | T3XS | T3XS | Detected; vendor DLL protocol, needs research | Wireless | `0x10BE` | `0xFFFF` |
 
-**G7 Pro, `0x1022`:** not in GameSir Connect. Seen on Linux, where the
-controller enumerates as a plain HID gamepad (interface 0) plus a keyboard,
-media-key, mouse and `0xFFF0` configuration collection sharing interface 1.
-SirClient treats it as a wired G7 Pro and filters that shared stream by the
-configuration collection's report IDs.
+**G7 Pro XBox (`0x10BA` cable, `0x10BB` dongle, `0x1022` HID fallback):**
+not in GameSir Connect; GameSir Nexus configures it. It is an Xbox-licensed
+controller, so its app mode is an Xbox GIP device, not HID. Nexus tunnels the
+G7 Pro command set through GIP message `0x0F`; see
+[protocol/g7-pro-xbox.md](protocol/g7-pro-xbox.md). On Linux SirClient talks
+to it over raw USB (detaching `xpad` while connected). When the dongle has
+dropped to its plain-HID fallback (`0x1022`, whose `0xFFF0` collection does
+not answer), SirClient resets the USB port to bring it back to GIP mode.
+Reading firmware and profiles and switching the active profile work; the
+editors are disabled until the 480-byte profile layout is mapped.
 
 Several product IDs per model are colour or collaboration editions
 (Gold, Crown, Nioh, NBA 2K and so on). Their protocol is identical.

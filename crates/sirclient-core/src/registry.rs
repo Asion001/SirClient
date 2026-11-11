@@ -14,6 +14,9 @@ pub const GAMESIR_VID: u16 = 0x3537;
 pub enum Protocol {
     /// G7 Pro 8K / G7 Pro CE (implemented).
     G7Pro,
+    /// G7 Pro XBox: the G7 Pro command set tunnelled through Xbox GIP over
+    /// raw USB (see [`crate::gip`]). Implemented on Linux.
+    G7ProXbox,
     /// Cyclone 2.
     C2,
     /// K2 8K.
@@ -38,6 +41,7 @@ impl Protocol {
     /// Whether SirClient can configure devices of this family.
     pub fn is_implemented(self) -> bool {
         matches!(self, Protocol::G7Pro)
+            || (matches!(self, Protocol::G7ProXbox) && cfg!(target_os = "linux"))
     }
 }
 
@@ -71,6 +75,36 @@ pub struct ModelInfo {
 }
 
 pub static MODELS: &[ModelInfo] = &[
+    // Not in GameSir Connect: configured by GameSir Nexus over Xbox GIP.
+    ModelInfo {
+        id: "G7ProXbox",
+        name: "G7 Pro XBox",
+        protocol: Protocol::G7ProXbox,
+        vendor_dll: false,
+        modes: &[
+            ModeInfo {
+                pid: 0x10BA,
+                connection: Connection::Wired,
+                usage_page: 0,
+                variant: "App mode (GIP)",
+            },
+            ModeInfo {
+                pid: 0x10BB,
+                connection: Connection::Wireless,
+                usage_page: 0,
+                variant: "App mode (GIP)",
+            },
+            // Plain HID fallback the dongle drops to on hosts that don't
+            // keep it in app mode. Its config collection does not answer;
+            // SirClient resets the port to get back to GIP mode.
+            ModeInfo {
+                pid: 0x1022,
+                connection: Connection::Wireless,
+                usage_page: 0xfff0,
+                variant: "HID fallback",
+            },
+        ],
+    },
     ModelInfo {
         id: "T4N2",
         name: "Nova 2 Lite",
@@ -142,14 +176,6 @@ pub static MODELS: &[ModelInfo] = &[
                 connection: Connection::Wired,
                 usage_page: 0xfff0,
                 variant: "Gold",
-            },
-            // Not in GameSir Connect: seen on Linux, where the controller
-            // comes up as a plain HID gamepad plus keyboard/mouse device.
-            ModeInfo {
-                pid: 0x1022,
-                connection: Connection::Wired,
-                usage_page: 0xfff0,
-                variant: "HID mode",
             },
             ModeInfo {
                 pid: 0x10b9,
@@ -421,9 +447,12 @@ mod tests {
     }
 
     #[test]
-    fn g7_pro_hid_mode_pid() {
-        let (m, mode) = lookup(GAMESIR_VID, 0x1022).unwrap();
-        assert_eq!(m.protocol, Protocol::G7Pro);
+    fn g7_pro_xbox_modes() {
+        for pid in [0x10ba, 0x10bb, 0x1022] {
+            let (m, _) = lookup(GAMESIR_VID, pid).unwrap();
+            assert_eq!(m.protocol, Protocol::G7ProXbox);
+        }
+        let (_, mode) = lookup(GAMESIR_VID, 0x1022).unwrap();
         assert_eq!(mode.usage_page, 0xfff0);
     }
 

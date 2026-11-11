@@ -1,0 +1,63 @@
+# G7 Pro XBox over GIP
+
+Recovered from GameSir Nexus 2.5.8 (static analysis of
+`HJC.GameSir.Nexus2_0.dll` plus its logs) and checked against a real
+controller (pad firmware 2.4.9, dongle 1.5.3) on Linux.
+
+## Modes and product IDs
+
+| PID      | What                                                         |
+|----------|--------------------------------------------------------------|
+| `0x10BA` | App mode over the cable: Xbox GIP, vendor class `FF/47/D0`   |
+| `0x10BB` | App mode over the 2.4 GHz dongle                             |
+| `0x100A` | XInput (Xbox 360) mode, seen on Windows before app mode      |
+| `0x1022` | Plain HID fallback (gamepad + keyboard/mouse + `0xFFF0`)     |
+
+On Linux the dongle enumerates as `0x10BB` (bound to `xpad`). About two
+seconds after the pad links, it re-enumerates as `0x1022` unless the host
+sends the `F2` command below. The `0xFFF0` collection of `0x1022` accepts
+output report `0x0F` but never answers. A USB port reset
+(`libusb_reset_device`) brings it back to `0x10BB` without replugging.
+
+## Framing
+
+GIP header: `[message, flags, sequence, length]`.
+
+* Host to device: message `0x0F`, flags `0x00`, a 60-byte payload.
+* Device to host: message `0x10`, flags `0x00`, a 60-byte payload.
+
+The payload is the G7 Pro 8K HID command with the report ID removed:
+
+```
+command:  [cmd, slot, offset_hi, offset_lo, length, data…]   zero padded to 60
+reply:    [code, slot, offset_hi, offset_lo, length, data…]
+```
+
+Chunks carry at most 55 data bytes (60 − 5 header bytes), against 58 on HID.
+
+## Commands seen in Nexus
+
+| cmd  | Payload                        | Reply                                    |
+|------|--------------------------------|------------------------------------------|
+| `F2` | `[F2, 01]`                     | none; keeps app mode, starts `E0` stream |
+| `0B` | `[0B]`                         | `[0C, current_profile]`                  |
+| `09` | `[09]`                         | `[0A, UTF-16 "0249" "0153"]` (pad, dongle firmware) |
+| `04` | read `[04, slot, off, off, n]` | `[05, slot, off, off, n, data]`          |
+| `03` | write, 60 bytes                | `[06, 00]` ok, `[06, 01]` busy           |
+| `07` | `[07, slot]`                   | `[06, 00]`                               |
+| `10` | re-read after a change         | `[11, …]` like `05`                      |
+| —    | —                              | `[0F, slot, off, off, len_hi, len_lo]` profile changed on the pad |
+| `E2` | stick-centre test              | —                                        |
+| —    | —                              | `[E0, …]` raw sticks/sensors, streamed   |
+
+GIP message `0x09` is the standard Xbox rumble command (Nexus uses it for
+the motor test).
+
+## Slots
+
+Slots are numbered as on the 8K: profiles 1–4, Shift `5`, Light `0x20`.
+Profiles are 480 bytes and the light slot is 511 bytes. The profile looks
+like a compact 8K profile (name 32, function data 32, 16 basic buttons ×7,
+four back buttons ×7 with no macros, triggers, sticks, motion). Mapping it
+field by field is still to do; Nexus logs dump each raw profile next to the
+parsed JSON, which is a good source.

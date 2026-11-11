@@ -27,7 +27,7 @@ pub fn report(app_version: &str) -> String {
     );
     let _ = writeln!(out);
 
-    let _ = writeln!(out, "== HID collections (hidapi) ==");
+    let _ = writeln!(out, "== HID collections (hidapi) and GIP devices ==");
     match Hid::new().and_then(|mut h| h.enumerate().map(|l| (h, l))) {
         Err(e) => {
             let _ = writeln!(out, "hidapi failed: {e}");
@@ -65,7 +65,12 @@ pub fn report(app_version: &str) -> String {
                     d.product,
                     d.path
                 );
-                if d.vid == GAMESIR_VID {
+                if crate::gip::is_gip_path(&d.path) {
+                    let _ = writeln!(
+                        out,
+                        "    raw USB (Xbox GIP); not opened here, connecting detaches xpad"
+                    );
+                } else if d.vid == GAMESIR_VID {
                     let res = match hid.open(&d.path) {
                         Ok(dev) if d.is_vendor_page() => format!(
                             "ok, report ids {:02x?}",

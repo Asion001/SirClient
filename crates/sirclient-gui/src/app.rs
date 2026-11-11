@@ -8,7 +8,7 @@ use egui::{RichText, Ui};
 use fluent_bundle::FluentValue;
 use sirclient_core::mock::{MOCK_PATH, MockG7};
 use sirclient_core::protocol::g7pro::{LightProfile, Profile, Slot, State};
-use sirclient_core::registry::Connection;
+use sirclient_core::registry::{Connection, Protocol};
 use sirclient_core::session::{Event, Request, Session};
 use sirclient_core::transport::{HidInfo, HidService};
 
@@ -42,6 +42,9 @@ pub struct Connected {
     pub state: Option<State>,
     pub pending: usize,
     pub connected_at: Instant,
+    /// G7 Pro XBox over GIP: profile layout not mapped yet, so only the
+    /// overview (firmware, active profile) is available.
+    pub xbox: bool,
 }
 
 impl Connected {
@@ -251,6 +254,9 @@ impl App {
             state: None,
             pending: 0,
             connected_at: Instant::now(),
+            xbox: info
+                .and_then(|i| i.model())
+                .is_some_and(|(m, _)| m.protocol == Protocol::G7ProXbox),
         }
     }
 
@@ -261,6 +267,13 @@ impl App {
     }
 
     pub fn connect(&mut self, info: &HidInfo) {
+        if info
+            .model()
+            .is_some_and(|(m, _)| m.protocol == Protocol::G7ProXbox)
+        {
+            self.connect_gip(info);
+            return;
+        }
         match self.hid.open(&info.path) {
             Ok(dev) => {
                 let s = Session::spawn(Box::new(dev), self.notifier());
@@ -283,6 +296,39 @@ impl App {
                 self.toast(msg, true)
             }
         }
+    }
+
+    /// G7 Pro XBox: talk GIP over raw USB (resetting it out of the HID
+    /// fallback first when needed).
+    #[cfg(target_os = "linux")]
+    fn connect_gip(&mut self, info: &HidInfo) {
+        match sirclient_core::gip::GipLink::open() {
+            Ok(link) => {
+                let id = link.path().to_string();
+                let s = Session::spawn(Box::new(link), self.notifier());
+                let title = info
+                    .model()
+                    .map(|(m, _)| m.name.to_string())
+                    .unwrap_or_else(|| info.label());
+                self.conn = Some(self.new_connected(id, title, Some(info), s));
+                self.manual_disconnect = false;
+                self.hid.rescan();
+            }
+            Err(e) => {
+                let mut msg = ta(
+                    "toast-open-failed",
+                    &[("error", FluentValue::from(e.to_string()))],
+                );
+                msg.push('\n');
+                msg.push_str(&t("hint-udev"));
+                self.toast(msg, true)
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn connect_gip(&mut self, _info: &HidInfo) {
+        self.toast(t("device-unsupported"), true);
     }
 
     pub fn disconnect(&mut self) {
@@ -324,7 +370,13 @@ impl App {
                 let supported: Vec<HidInfo> = self
                     .config_devices()
                     .into_iter()
-                    .filter(|d| d.model().is_some_and(|(m, _)| m.protocol.is_implemented()))
+                    // The XBox edition stops working as a gamepad while connected,
+                    // so it is only connected on request.
+                    .filter(|d| {
+                        d.model().is_some_and(|(m, _)| {
+                            m.protocol.is_implemented() && m.protocol != Protocol::G7ProXbox
+                        })
+                    })
                     .collect();
                 if let Some(d) = supported.first() {
                     let d = d.clone();
@@ -889,6 +941,10 @@ impl eframe::App for App {
                                 {
                                     ui.label(RichText::new(t("loading-no-answer")).color(WARN));
                                 }
+                                return;
+                            }
+                            if c.xbox && page != Page::Overview {
+                                pages::xbox_notice(ui);
                                 return;
                             }
                             match page {

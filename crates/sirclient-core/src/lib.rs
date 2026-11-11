@@ -3,6 +3,8 @@
 //!
 //! * [`transport`] enumerates and opens HID collections (USB, 2.4 GHz
 //!   dongle and Bluetooth).
+//! * [`gip`] talks to Xbox-edition controllers over raw USB (Xbox Game
+//!   Input Protocol), which tunnels the same configuration commands.
 //! * [`registry`] knows which GameSir models exist and which protocol each
 //!   one speaks.
 //! * [`protocol`] holds the wire formats; [`session`] runs the
@@ -10,6 +12,7 @@
 //! * [`mock`] simulates a G7 Pro so the UI can run without hardware.
 
 pub mod diag;
+pub mod gip;
 pub mod mock;
 pub mod probe;
 pub mod protocol;
@@ -21,6 +24,8 @@ pub mod transport;
 pub enum Error {
     #[error("HID error: {0}")]
     Hid(#[from] hidapi::HidError),
+    #[error("USB error: {0}")]
+    Usb(String),
     #[error("invalid device path")]
     InvalidPath,
     #[error("expected {expected} bytes, got {got}")]

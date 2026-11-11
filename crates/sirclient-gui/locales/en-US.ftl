@@ -229,3 +229,6 @@ probe-no-answer = No answer. This connection does not accept configuration comma
 probe-empty = (nothing received)
 probe-raw = Raw reports ({ $count })
 probe-error = Could not open the device: { $error }
+
+xbox-notice-title = Editing is not available for the G7 Pro XBox yet
+xbox-notice-body = SirClient can read this controller's firmware and profiles and switch the active profile. Button, stick and lighting editors need its profile layout, which is still being mapped. While SirClient is connected, the controller does not work as a gamepad.

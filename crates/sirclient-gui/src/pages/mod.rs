@@ -17,6 +17,16 @@ pub fn empty_state(ui: &mut Ui) {
     });
 }
 
+/// Shown on editing pages for the G7 Pro XBox, whose profile layout
+/// differs from the G7 Pro 8K and is not mapped yet.
+pub fn xbox_notice(ui: &mut Ui) {
+    card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new(t("xbox-notice-title")).size(16.0).strong());
+        ui.label(RichText::new(t("xbox-notice-body")).color(MUTED));
+    });
+}
+
 /// Lay out cards in a wrapping row with roughly `min` px per card.
 pub fn columns(ui: &mut Ui, n: usize, min: f32, mut f: impl FnMut(usize, &mut Ui)) {
     let w = ui.available_width();

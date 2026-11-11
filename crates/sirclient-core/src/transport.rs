@@ -112,6 +112,8 @@ impl Hid {
                 serial: d.serial_number().unwrap_or_default().to_string(),
             })
             .collect();
+        // Xbox-edition controllers in app mode are not HID devices.
+        out.extend(crate::gip::enumerate());
         out.sort_by(|a, b| (a.vid, a.pid, &a.path).cmp(&(b.vid, b.pid, &b.path)));
         Ok(out)
     }
