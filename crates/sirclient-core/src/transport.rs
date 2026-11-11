@@ -88,9 +88,14 @@ pub struct Hid {
 
 impl Hid {
     pub fn new() -> Result<Self, Error> {
-        Ok(Self {
-            api: HidApi::new()?,
-        })
+        let api = HidApi::new()?;
+        // hidapi seizes devices on macOS by default, which fails for a
+        // gamepad the system (GameController.framework) already has open,
+        // such as the G7 Pro XBox over Bluetooth, and would take it away
+        // from games. Share instead.
+        #[cfg(target_os = "macos")]
+        api.set_open_exclusive(false);
+        Ok(Self { api })
     }
 
     /// Rescan and list every HID collection on the system.
