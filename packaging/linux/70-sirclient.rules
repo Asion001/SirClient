@@ -10,3 +10,6 @@ KERNEL=="hidraw*", KERNELS=="*:3537:*", MODE="0660", GROUP="input", TAG+="uacces
 # Xbox-edition controllers (GIP, e.g. G7 Pro XBox 3537:10BA / dongle 10BB) are
 # configured over raw USB, so the USB device node needs the same access.
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3537", MODE="0660", GROUP="input", TAG+="uaccess"
+# The G7 Pro XBox over Bluetooth presents itself as a Microsoft "Xbox
+# Bluetooth Gamepad" (045E:02FD): live input, battery and rumble.
+KERNEL=="hidraw*", KERNELS=="0005:045E:02FD.*", MODE="0660", GROUP="input", TAG+="uaccess"
