@@ -43,8 +43,10 @@ pub enum Protocol {
 impl Protocol {
     /// Whether SirClient can configure devices of this family.
     pub fn is_implemented(self) -> bool {
-        matches!(self, Protocol::G7Pro | Protocol::XboxBluetooth)
-            || (matches!(self, Protocol::G7ProXbox) && cfg!(target_os = "linux"))
+        matches!(
+            self,
+            Protocol::G7Pro | Protocol::XboxBluetooth | Protocol::G7ProXbox
+        )
     }
 }
 
