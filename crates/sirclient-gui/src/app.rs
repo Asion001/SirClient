@@ -534,6 +534,7 @@ impl App {
                 let bat = c
                     .state
                     .as_ref()
+                    .filter(|s| s.battery > 0)
                     .map(|s| format!(" · {}%", s.battery))
                     .unwrap_or_default();
                 format!("{}{}", conn_label(mode.connection), bat)
@@ -705,10 +706,11 @@ impl App {
             header_tools_w: tools_w,
             ..
         } = self;
+        // Nothing to switch or apply over Bluetooth (live input only).
         let conn = if self.page == Page::Devices {
             None
         } else {
-            conn.as_mut()
+            conn.as_mut().filter(|c| !c.bt)
         };
         // Revert / Apply and the profile pills sit right of the title when
         // they fit. Otherwise they move to their own row, and to two rows

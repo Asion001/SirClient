@@ -68,10 +68,11 @@ impl<D: HidIo> BtLink<D> {
             s[1 + k] = (v >> 8) as u8;
             s[26 + k] = v as u8;
         }
-        // Hat: Xbox 1..=8 clockwise from up, 0 centred; 8K 0..=7, 8+ centred.
+        // Hat: 1..=8 clockwise from up, anything else centred (this pad
+        // sends 9); 8K: 0..=7, 8+ centred.
         let hat = match r[13] & 0x0F {
-            0 => 0x0F,
-            h => h - 1,
+            h @ 1..=8 => h - 1,
+            _ => 0x0F,
         };
         let b0 = r[14];
         let b1 = r[15];

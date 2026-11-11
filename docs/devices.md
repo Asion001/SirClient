@@ -36,6 +36,11 @@ All editors work: SirClient translates the XBox's 480-byte profiles to and
 from the 8K layout the UI edits (no macros on this model), and has its own
 page for the XBox's keyframe lighting.
 
+Over **Bluetooth** the G7 Pro XBox is a standard Microsoft "Xbox Bluetooth
+Gamepad" (`045E:02FD`) without GameSir's settings channel (Nexus has no
+Bluetooth support either). SirClient shows live input, battery and a rumble
+test for each motor; settings need the dongle or the cable.
+
 Several product IDs per model are colour or collaboration editions
 (Gold, Crown, Nioh, NBA 2K and so on). Their protocol is identical.
 

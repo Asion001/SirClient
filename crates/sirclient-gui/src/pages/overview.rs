@@ -27,7 +27,8 @@ fn stat(ui: &mut Ui, label: String, value: String, sub: String) {
 pub fn show_live(ui: &mut Ui, c: &mut Connected, st: &mut UiState) {
     super::bt_notice(ui);
     ui.add_space(14.0);
-    let battery = c.state.as_ref().map(|s| s.battery);
+    // The pad sends its battery report only now and then: 0 = not yet.
+    let battery = c.state.as_ref().map(|s| s.battery).filter(|&b| b > 0);
     super::columns(ui, 2, 420.0, |i, ui| {
         if i == 0 {
             live_input(ui, c, st);
