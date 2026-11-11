@@ -8,7 +8,7 @@
 //! padded to 60 bytes). Replies come back as GIP message `0x10` with a
 //! 60-byte payload laid out like the HID replies.
 //!
-//! Two quirks matter on Linux:
+//! Two quirks matter (seen on Linux, where `xpad` does not send `F2`):
 //!
 //! * Shortly after the pad links, the dongle drops to a plain HID mode
 //!   (`3537:1022`) unless the host sends the `0xF2` "app present" command,
@@ -17,8 +17,9 @@
 //! * From the HID fallback a USB port reset brings the dongle back into
 //!   GIP mode without replugging; [`GipLink::open`] does that when needed.
 //!
-//! While SirClient holds the interface, `xpad` is detached, so the pad does
-//! not work as a gamepad; it is reattached when the link is dropped.
+//! While SirClient holds the interface on Linux, `xpad` is detached, so the
+//! pad does not work as a gamepad; it is reattached when the link is dropped.
+//! macOS has no driver for the GIP interface, so libusb claims it directly.
 
 use crate::transport::HidInfo;
 
@@ -75,7 +76,6 @@ pub fn decode_reply(packet: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// GIP acknowledgement for a packet that asked for one (flag `0x10`).
-#[cfg(any(target_os = "linux", test))]
 fn ack_for(packet: &[u8]) -> Option<[u8; 13]> {
     if packet.len() < 4 || packet[1] & 0x10 == 0 {
         return None;
@@ -85,8 +85,10 @@ fn ack_for(packet: &[u8]) -> Option<[u8; 13]> {
     ])
 }
 
-#[cfg(target_os = "linux")]
-mod imp {
+/// Raw USB through libusb. Works wherever libusb can claim the GIP
+/// interface: Linux (after detaching `xpad`), macOS (no system driver binds
+/// it) and Windows when the interface has WinUSB bound.
+mod usb {
     use std::time::{Duration, Instant};
 
     use rusb::{DeviceHandle, GlobalContext, UsbContext};
@@ -213,6 +215,12 @@ mod imp {
                 path,
                 pending: Default::default(),
             };
+            if !link.reattach {
+                // No system driver started the pad (macOS, Windows with
+                // WinUSB): send the GIP power-on that `xpad` would have.
+                let seq = link.next_seq();
+                link.raw_write(&[0x05, 0x20, seq, 0x01, 0x00])?;
+            }
             // Tell the firmware a configurator is attached before the dongle
             // gives up on GIP mode.
             link.write(&[0x0F, 0xF2, 0x01])?;
@@ -228,16 +236,19 @@ mod imp {
             self.seq = self.seq.wrapping_add(1).max(1);
             self.seq
         }
+
+        fn raw_write(&self, pkt: &[u8]) -> Result<(), Error> {
+            self.handle
+                .write_interrupt(EP_OUT, pkt, Duration::from_millis(200))
+                .map_err(usb)?;
+            Ok(())
+        }
     }
 
     impl Link for GipLink {
         fn write(&mut self, report: &[u8]) -> Result<(), Error> {
             let seq = self.next_seq();
-            let pkt = encode_command(report, seq);
-            self.handle
-                .write_interrupt(EP_OUT, &pkt, Duration::from_millis(200))
-                .map_err(usb)?;
-            Ok(())
+            self.raw_write(&encode_command(report, seq))
         }
 
         fn read(&mut self, buf: &mut [u8], timeout_ms: i32) -> Result<usize, Error> {
@@ -287,14 +298,7 @@ mod imp {
     }
 }
 
-#[cfg(target_os = "linux")]
-pub use imp::{GipLink, enumerate, reset_hid_fallback};
-
-/// GIP devices are driven by the OS outside Linux.
-#[cfg(not(target_os = "linux"))]
-pub fn enumerate() -> Vec<HidInfo> {
-    vec![]
-}
+pub use usb::{GipLink, enumerate, reset_hid_fallback};
 
 #[cfg(test)]
 mod tests {

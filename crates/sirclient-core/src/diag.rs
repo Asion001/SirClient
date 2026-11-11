@@ -66,10 +66,7 @@ pub fn report(app_version: &str) -> String {
                     d.path
                 );
                 if crate::gip::is_gip_path(&d.path) {
-                    let _ = writeln!(
-                        out,
-                        "    raw USB (Xbox GIP); not opened here, connecting detaches xpad"
-                    );
+                    let _ = writeln!(out, "    raw USB (Xbox GIP); not opened here");
                 } else if d.vid == GAMESIR_VID {
                     let res = match hid.open(&d.path) {
                         Ok(dev) if d.is_vendor_page() => format!(

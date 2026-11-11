@@ -14,9 +14,7 @@ serde_json.workspace = true
 crossbeam-channel.workspace = true
 thiserror.workspace = true
 log.workspace = true
+rusb.workspace = true
 
 [dev-dependencies]
 env_logger.workspace = true
-
-[target.'cfg(target_os = "linux")'.dependencies]
-rusb.workspace = true

@@ -15,7 +15,7 @@ pub enum Protocol {
     /// G7 Pro 8K / G7 Pro CE (implemented).
     G7Pro,
     /// G7 Pro XBox: the G7 Pro command set tunnelled through Xbox GIP over
-    /// raw USB (see [`crate::gip`]). Implemented on Linux.
+    /// raw USB (see [`crate::gip`]).
     G7ProXbox,
     /// Cyclone 2.
     C2,

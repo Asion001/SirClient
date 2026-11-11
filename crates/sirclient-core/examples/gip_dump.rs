@@ -1,9 +1,8 @@
 //! Read firmware, the active profile and every slot from a G7 Pro XBox over
-//! GIP and print them. Linux only.
+//! GIP and print them.
 //!
 //!     cargo run -p sirclient-core --example gip_dump
 
-#[cfg(target_os = "linux")]
 fn main() {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -50,9 +49,4 @@ fn main() {
             println!("current profile: {n}");
         }
     }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn main() {
-    eprintln!("GIP access is only implemented on Linux");
 }

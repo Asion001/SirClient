@@ -300,7 +300,6 @@ impl App {
 
     /// G7 Pro XBox: talk GIP over raw USB (resetting it out of the HID
     /// fallback first when needed).
-    #[cfg(target_os = "linux")]
     fn connect_gip(&mut self, info: &HidInfo) {
         match sirclient_core::gip::GipLink::open() {
             Ok(link) => {
@@ -319,16 +318,13 @@ impl App {
                     "toast-open-failed",
                     &[("error", FluentValue::from(e.to_string()))],
                 );
-                msg.push('\n');
-                msg.push_str(&t("hint-udev"));
+                if cfg!(target_os = "linux") {
+                    msg.push('\n');
+                    msg.push_str(&t("hint-udev"));
+                }
                 self.toast(msg, true)
             }
         }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    fn connect_gip(&mut self, _info: &HidInfo) {
-        self.toast(t("device-unsupported"), true);
     }
 
     pub fn disconnect(&mut self) {
