@@ -143,6 +143,14 @@ pub static MODELS: &[ModelInfo] = &[
                 usage_page: 0xfff0,
                 variant: "Gold",
             },
+            // Not in GameSir Connect: seen on Linux, where the controller
+            // comes up as a plain HID gamepad plus keyboard/mouse device.
+            ModeInfo {
+                pid: 0x1022,
+                connection: Connection::Wired,
+                usage_page: 0xfff0,
+                variant: "HID mode",
+            },
             ModeInfo {
                 pid: 0x10b9,
                 connection: Connection::Wireless,
@@ -409,6 +417,13 @@ mod tests {
         assert_eq!(mode.connection, Connection::Wired);
         let (_, mode) = lookup(GAMESIR_VID, 0x10b9).unwrap();
         assert_eq!(mode.connection, Connection::Wireless);
+        assert_eq!(mode.usage_page, 0xfff0);
+    }
+
+    #[test]
+    fn g7_pro_hid_mode_pid() {
+        let (m, mode) = lookup(GAMESIR_VID, 0x1022).unwrap();
+        assert_eq!(m.protocol, Protocol::G7Pro);
         assert_eq!(mode.usage_page, 0xfff0);
     }
 

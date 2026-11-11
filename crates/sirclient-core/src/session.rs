@@ -30,6 +30,11 @@ pub trait Link: Send {
     fn write(&mut self, report: &[u8]) -> Result<(), Error>;
     /// Read one input report; returns 0 on timeout.
     fn read(&mut self, buf: &mut [u8], timeout_ms: i32) -> Result<usize, Error>;
+    /// Input report IDs that belong to the configuration collection, when
+    /// the link shares a stream with other collections. `None` = accept all.
+    fn config_report_ids(&self) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 impl Link for hidapi::HidDevice {
@@ -40,7 +45,14 @@ impl Link for hidapi::HidDevice {
     fn read(&mut self, buf: &mut [u8], timeout_ms: i32) -> Result<usize, Error> {
         Ok(self.read_timeout(buf, timeout_ms)?)
     }
+    fn config_report_ids(&self) -> Option<Vec<u8>> {
+        let ids = crate::transport::device_report_ids(self, CONFIG_USAGE_PAGE);
+        if ids.is_empty() { None } else { Some(ids) }
+    }
 }
+
+/// HID usage page of the G7 Pro configuration collection.
+const CONFIG_USAGE_PAGE: u16 = 0xFFF0;
 
 /// Requests from the UI.
 #[derive(Clone, Debug)]
@@ -190,6 +202,8 @@ struct Worker {
     last_heartbeat: Instant,
     last_state: Instant,
     last_pending: usize,
+    /// Report IDs of the configuration collection; others are ignored.
+    accept: Option<Vec<u8>>,
 }
 
 impl Worker {
@@ -200,7 +214,10 @@ impl Worker {
         notify: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
         let now = Instant::now();
+        let accept = link.config_report_ids();
+        log::info!("configuration report ids: {accept:02x?}");
         Worker {
+            accept,
             link,
             req,
             ev,
@@ -389,6 +406,11 @@ impl Worker {
     }
 
     fn handle(&mut self, r: &[u8]) {
+        if let Some(ids) = &self.accept
+            && !ids.contains(&r[0])
+        {
+            return; // another collection on the same stream (keyboard, mouse…)
+        }
         if r[0] == commands::STATE_REPORT_ID {
             if self.last_state.elapsed() >= STATE_EVERY
                 && let Some(s) = State::parse(r)

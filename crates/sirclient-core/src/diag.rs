@@ -67,6 +67,10 @@ pub fn report(app_version: &str) -> String {
                 );
                 if d.vid == GAMESIR_VID {
                     let res = match hid.open(&d.path) {
+                        Ok(dev) if d.is_vendor_page() => format!(
+                            "ok, report ids {:02x?}",
+                            crate::transport::device_report_ids(&dev, d.usage_page)
+                        ),
                         Ok(_) => "ok".to_string(),
                         Err(e) => e.to_string(),
                     };

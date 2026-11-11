@@ -225,3 +225,103 @@ impl HidService {
             .map_err(|_| Error::InvalidPath)?
     }
 }
+
+/// Report IDs used by the top-level collection with usage page `page`,
+/// read from a HID report descriptor.
+///
+/// On Linux one hidraw node carries every collection of a USB interface, so
+/// a controller's keyboard and mouse reports arrive on the same stream as
+/// its configuration replies. Knowing which report IDs belong to the
+/// configuration collection lets the session ignore the rest.
+/// Returns an empty list when the collection uses no report IDs or the
+/// descriptor can't be parsed.
+pub fn report_ids_in_page(desc: &[u8], page: u16) -> Vec<u8> {
+    let mut ids = Vec::new();
+    let (mut i, mut usage_page, mut report_id, mut depth) = (0usize, 0u32, 0u8, 0u32);
+    let mut top_page: Option<u16> = None;
+    while i < desc.len() {
+        let b = desc[i];
+        if b == 0xFE {
+            // Long item: 0xFE, size, tag, data.
+            let size = desc.get(i + 1).copied().unwrap_or(0) as usize;
+            i += 3 + size;
+            continue;
+        }
+        let size = match b & 3 {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            _ => 4,
+        };
+        if i + 1 + size > desc.len() {
+            break;
+        }
+        let mut v = 0u32;
+        for k in 0..size {
+            v |= (desc[i + 1 + k] as u32) << (8 * k);
+        }
+        match ((b >> 2) & 3, b >> 4) {
+            (1, 0x0) => usage_page = v,
+            (1, 0x8) => report_id = v as u8,
+            (0, 0xA) => {
+                if depth == 0 {
+                    top_page = Some(usage_page as u16);
+                }
+                depth += 1;
+            }
+            (0, 0xC) => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    top_page = None;
+                }
+            }
+            // Input, Output and Feature items.
+            (0, 0x8) | (0, 0x9) | (0, 0xB)
+                if top_page == Some(page) && report_id != 0 && !ids.contains(&report_id) =>
+            {
+                ids.push(report_id);
+            }
+            _ => {}
+        }
+        i += 1 + size;
+    }
+    ids
+}
+
+/// Report IDs of the `page` collection on an open device, if it can tell.
+pub fn device_report_ids(dev: &hidapi::HidDevice, page: u16) -> Vec<u8> {
+    let mut buf = [0u8; 4096];
+    match dev.get_report_descriptor(&mut buf) {
+        Ok(n) => report_ids_in_page(&buf[..n], page),
+        Err(_) => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod descriptor_tests {
+    use super::report_ids_in_page;
+
+    #[test]
+    fn finds_ids_of_vendor_collection_only() {
+        let desc = [
+            0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, // mouse collection
+            0x85, 0x02, 0x81, 0x02, 0xC0, //
+            0x06, 0xF0, 0xFF, 0x09, 0x40, 0xA1, 0x01, // vendor 0xFFF0 collection
+            0x85, 0x0F, 0x81, 0x02, 0x91, 0x02, //
+            0x85, 0x12, 0x81, 0x02, 0xC0, //
+            0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, // keyboard collection
+            0x85, 0x01, 0x81, 0x02, 0xC0,
+        ];
+        assert_eq!(report_ids_in_page(&desc, 0xFFF0), vec![0x0F, 0x12]);
+        assert_eq!(report_ids_in_page(&desc, 0x0001), vec![0x02, 0x01]);
+    }
+
+    #[test]
+    fn no_report_ids_or_garbage() {
+        assert!(
+            report_ids_in_page(&[0x06, 0xF0, 0xFF, 0xA1, 0x01, 0x81, 0x02, 0xC0], 0xFFF0)
+                .is_empty()
+        );
+        assert!(report_ids_in_page(&[0x87, 0x01], 0xFFF0).is_empty());
+    }
+}

@@ -24,6 +24,12 @@ GameSir Connect 1.14.5 and matches [`registry.rs`](../crates/sirclient-core/src/
 | T3XS | T3XS | Detected; vendor DLL protocol, needs research | Wired | `0x105A` | `0xFFFF` |
 | T3XS | T3XS | Detected; vendor DLL protocol, needs research | Wireless | `0x10BE` | `0xFFFF` |
 
+**G7 Pro, `0x1022`:** not in GameSir Connect. Seen on Linux, where the
+controller enumerates as a plain HID gamepad (interface 0) plus a keyboard,
+media-key, mouse and `0xFFF0` configuration collection sharing interface 1.
+SirClient treats it as a wired G7 Pro and filters that shared stream by the
+configuration collection's report IDs.
+
 Several product IDs per model are colour or collaboration editions
 (Gold, Crown, Nioh, NBA 2K and so on). Their protocol is identical.
 
