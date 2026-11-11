@@ -22,12 +22,15 @@ device-demo = Demo device
 device-demo-sub = Simulated G7 Pro, no hardware
 device-none = No GameSir controller found. Connect it with a cable or its 2.4 GHz dongle.
 device-unsupported = Detected · not supported yet
+device-unknown-sub = Unknown model { $id } · click to try the G7 Pro protocol
 device-disconnect = Disconnect
 conn-wired = Wired · USB
 conn-wireless = Wireless · 2.4 GHz
 
 no-device = No controller connected
 loading = Reading settings from the controller…
+loading-no-answer = The controller is not answering. It may use a different protocol, or another app may be using it. Try HID devices & Bluetooth → Probe config, or run `sirclient --diagnose` and attach the output to an issue.
+hint-udev = On Linux, install the udev rule shipped with SirClient (70-sirclient.rules), then unplug and replug the controller.
 empty-title = No controller connected
 empty-body = Plug in a G7 Pro 8K with its cable or 2.4 GHz dongle, or pick Demo device in the sidebar to explore the app.
 

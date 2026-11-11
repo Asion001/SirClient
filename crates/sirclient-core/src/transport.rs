@@ -62,11 +62,20 @@ impl HidInfo {
         }
     }
 
+    /// A GameSir vendor-defined collection whose product ID is not in the
+    /// registry (e.g. a controller that enumerates differently on Linux).
+    /// It may still speak a known protocol.
+    pub fn is_unknown_gamesir(&self) -> bool {
+        self.vid == registry::GAMESIR_VID && self.model().is_none() && self.is_vendor_page()
+    }
+
     /// Short label for lists.
     pub fn label(&self) -> String {
         match self.model() {
             Some((m, mode)) => format!("{} ({:?})", m.name, mode.connection),
-            None if !self.product.is_empty() => self.product.clone(),
+            None if !self.product.is_empty() => {
+                format!("{} ({:04x}:{:04x})", self.product, self.vid, self.pid)
+            }
             None => format!("{:04x}:{:04x}", self.vid, self.pid),
         }
     }

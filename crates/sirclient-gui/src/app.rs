@@ -41,6 +41,7 @@ pub struct Connected {
     pub current_profile: u8,
     pub state: Option<State>,
     pub pending: usize,
+    pub connected_at: Instant,
 }
 
 impl Connected {
@@ -245,6 +246,7 @@ impl App {
             current_profile: 1,
             state: None,
             pending: 0,
+            connected_at: Instant::now(),
         }
     }
 
@@ -265,13 +267,17 @@ impl App {
                 self.conn = Some(self.new_connected(info.path.clone(), title, Some(info), s));
                 self.manual_disconnect = false;
             }
-            Err(e) => self.toast(
-                ta(
+            Err(e) => {
+                let mut msg = ta(
                     "toast-open-failed",
                     &[("error", FluentValue::from(e.to_string()))],
-                ),
-                true,
-            ),
+                );
+                if cfg!(target_os = "linux") {
+                    msg.push('\n');
+                    msg.push_str(&t("hint-udev"));
+                }
+                self.toast(msg, true)
+            }
         }
     }
 
@@ -409,6 +415,35 @@ impl App {
                 connect_to = Some(d.clone());
             }
         }
+        // GameSir devices with an unknown product ID: offer to try the G7 Pro
+        // protocol (it only reads until the user applies changes).
+        let unknown: Vec<HidInfo> = self
+            .all_hid
+            .iter()
+            .filter(|d| d.is_unknown_gamesir())
+            .cloned()
+            .collect();
+        for d in &unknown {
+            let selected = self.conn.as_ref().is_some_and(|c| c.id == d.path);
+            let title = if d.product.is_empty() {
+                format!("GameSir {:04X}", d.pid)
+            } else {
+                d.product.clone()
+            };
+            let sub = ta(
+                "device-unknown-sub",
+                &[(
+                    "id",
+                    FluentValue::from(format!(
+                        "{:04X}:{:04X} · {:04X}",
+                        d.vid, d.pid, d.usage_page
+                    )),
+                )],
+            );
+            if device_button(ui, selected, &title, &sub, true).clicked() && !selected {
+                connect_to = Some(d.clone());
+            }
+        }
         if let Some(d) = connect_to {
             self.connect(&d);
         }
@@ -425,7 +460,10 @@ impl App {
         {
             self.connect_mock();
         }
-        if devices.is_empty() && !mock_selected {
+        if let Some(e) = &self.hid_error {
+            ui.colored_label(WARN, e);
+        }
+        if devices.is_empty() && unknown.is_empty() && !mock_selected {
             caption(ui, t("device-none"));
         }
         if self.conn.is_some() && ui.small_button(t("device-disconnect")).clicked() {
@@ -732,6 +770,11 @@ impl eframe::App for App {
                                     ui.spinner();
                                     ui.label(t("loading"));
                                 });
+                                if c.loaded.is_empty()
+                                    && c.connected_at.elapsed() > Duration::from_secs(6)
+                                {
+                                    ui.label(RichText::new(t("loading-no-answer")).color(WARN));
+                                }
                                 return;
                             }
                             match page {

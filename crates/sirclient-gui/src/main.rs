@@ -2,6 +2,7 @@
 //!
 //! `sirclient --mock` starts with a simulated G7 Pro connected.
 //! `sirclient --screenshot <dir>` saves a PNG of every page and exits.
+//! `sirclient --diagnose` prints a device report for bug reports and exits.
 
 // No console window for release builds on Windows.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
@@ -15,6 +16,13 @@ mod widgets;
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--diagnose") {
+        print!(
+            "{}",
+            sirclient_core::diag::report(env!("CARGO_PKG_VERSION"))
+        );
+        return Ok(());
+    }
     let mock = args.iter().any(|a| a == "--mock" || a == "--demo");
     let shots = args
         .iter()
