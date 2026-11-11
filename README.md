@@ -17,7 +17,7 @@ app and runs on Windows, macOS and Linux.
 | Controller | Status |
 |---|---|
 | G7 Pro 8K (G7 Pro CE), wired and 2.4 GHz dongle | Supported |
-| G7 Pro XBox, wired and 2.4 GHz dongle | Connects and reads firmware and profiles (tested on Linux; Windows and macOS untested). Profile editing to come |
+| G7 Pro XBox, wired and 2.4 GHz dongle | Connects and reads firmware and profiles (tested on Linux; Windows untested; macOS not possible yet, see [notes](docs/protocol/g7-pro-xbox.md)). Profile editing to come |
 | Cyclone 2, K2 8K, Tarantula CE, Tegenaria Lite | Detected, protocol not ported yet |
 | Nova Pro, Nova 2 Lite, Nova Vision, Tarantula Pro, T3XS | Detected, needs research (official app uses closed DLLs) |
 
@@ -108,7 +108,8 @@ Nexus first.
 ### macOS
 
 Nothing extra for the controller's configuration interface. The G7 Pro
-XBox is opened over raw USB, since macOS has no driver for it. The probe
+XBox can't be configured on macOS yet: without an Xbox driver it switches
+to a plain gamepad mode. The probe
 page may need Input Monitoring permission to read keyboard or mouse
 collections.
 

@@ -70,9 +70,23 @@ physical inputs at 49.
 
 * **Linux:** raw USB with libusb. `xpad` is detached from interface 0 while
   SirClient holds it. Endpoints `0x02` out and `0x82` in.
-* **macOS:** the same libusb path. No system driver binds the GIP
-  interface, so SirClient also sends the GIP power-on
-  (`05 20 seq 01 00`) that `xpad` would otherwise have sent.
+* **macOS: not working.** No system driver binds the GIP interface. The
+  dongle shows up as `0x10BB` only until the pad links. About 1.2 s after
+  the pad's GIP announce it re-enumerates as `0x1022`, whose HID
+  descriptor is a plain gamepad with no `0xFFF0` collection. The wired pad
+  comes up as `0x1022` straight away (bcdDevice `0x0249`). Commands do
+  work inside that window: `0B` got its `0C` reply. None of these kept it
+  in GIP mode (tested 2026-11-11 with `examples/gip_raw.rs`):
+  * an `F2` heartbeat every 250 ms
+  * SET_CONFIGURATION
+  * GIP power-on before or after the announce
+  * identify (`04`) and LED-on (`0A`)
+  * SET_INTERFACE(1, 0)
+  * libusb reset and an IOUSBHost port reset (both come back as `0x1022`)
+
+  The likely fix is a DriverKit extension that claims the pad at plug-in.
+  Until then the XBox edition is marked unsupported on macOS (Bluetooth
+  live input still works).
 * **Windows:** `xboxgip.sys` owns the pad, so it can't be opened directly.
   Nexus ships a small WinRT component (`D4XGaming.Devices.dll`) that calls
   `GameControllerFactoryManager.RegisterCustomFactoryForGipInterface` for

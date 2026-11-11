@@ -43,10 +43,14 @@ pub enum Protocol {
 impl Protocol {
     /// Whether SirClient can configure devices of this family.
     pub fn is_implemented(self) -> bool {
-        matches!(
-            self,
-            Protocol::G7Pro | Protocol::XboxBluetooth | Protocol::G7ProXbox
-        )
+        match self {
+            Protocol::G7Pro | Protocol::XboxBluetooth => true,
+            // On macOS the pad and dongle drop to plain HID mode about a
+            // second after linking (no Xbox driver claims them), so there
+            // is no configuration channel; see docs/protocol/g7-pro-xbox.md.
+            Protocol::G7ProXbox => !cfg!(target_os = "macos"),
+            _ => false,
+        }
     }
 }
 
