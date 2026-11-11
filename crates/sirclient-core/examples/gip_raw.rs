@@ -18,6 +18,50 @@ fn main() {
     let power_on = !args.iter().any(|a| a == "--no-power-on");
 
     let ctx = rusb::Context::new().expect("libusb");
+    let pids_now = |ctx: &rusb::Context| -> Vec<u16> {
+        ctx.devices()
+            .map(|l| {
+                l.iter()
+                    .filter_map(|d| d.device_descriptor().ok())
+                    .filter(|dd| dd.vendor_id() == VID)
+                    .map(|dd| dd.product_id())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut from_fallback = false;
+    let now = pids_now(&ctx);
+    println!("GameSir PIDs now: {now:04x?}");
+    if !now.iter().any(|p| PIDS.contains(p)) && now.contains(&0x1022) {
+        // The dongle dropped to its HID fallback: reset it back to GIP.
+        let d = ctx
+            .devices()
+            .unwrap()
+            .iter()
+            .find(|d| {
+                d.device_descriptor()
+                    .is_ok_and(|dd| dd.product_id() == 0x1022)
+            })
+            .unwrap();
+        match d.open() {
+            Ok(h) => println!("reset 1022: {:?}", h.reset()),
+            Err(e) => println!("open 1022 for reset: {e}"),
+        }
+        let t0 = Instant::now();
+        let mut last = Vec::new();
+        while t0.elapsed() < Duration::from_secs(6) {
+            let p = pids_now(&ctx);
+            if p != last {
+                println!("  {:>5} ms: {p:04x?}", t0.elapsed().as_millis());
+                last = p.clone();
+            }
+            if p.iter().any(|x| PIDS.contains(x)) {
+                from_fallback = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
     let dev = ctx
         .devices()
         .expect("device list")
@@ -159,11 +203,13 @@ fn main() {
         println!("  ({timeouts} empty 100 ms reads)");
     };
 
-    println!("-- listening before any message");
-    listen(&h, 1500);
+    if !from_fallback {
+        println!("-- listening before any message");
+        listen(&h, 1500);
+    }
     if power_on {
         send(&h, "power on", vec![0x05, 0x20, 0, 0x01, 0x00]);
-        listen(&h, 1500);
+        listen(&h, if from_fallback { 200 } else { 1500 });
     }
     let cmd = |body: &[u8]| {
         let mut p = vec![0x0F, 0x00, 0, 60];
@@ -177,5 +223,8 @@ fn main() {
     listen(&h, 1000);
     send(&h, "09 (firmware)", cmd(&[0x09]));
     listen(&h, 1500);
+    send(&h, "F2 01 again", cmd(&[0xF2, 0x01]));
+    listen(&h, 3000);
+    println!("GameSir PIDs at the end: {:04x?}", pids_now(&ctx));
     let _ = h.release_interface(0);
 }
