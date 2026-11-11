@@ -8,6 +8,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod chrome;
 mod i18n;
 mod pages;
 mod theme;
@@ -33,10 +34,12 @@ fn main() -> eframe::Result {
         let _ = std::fs::create_dir_all(d);
     }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("SirClient")
-            .with_inner_size([1280.0, 860.0])
-            .with_min_inner_size([900.0, 600.0]),
+        viewport: chrome::viewport(
+            egui::ViewportBuilder::default()
+                .with_title("SirClient")
+                .with_inner_size([1280.0, 860.0])
+                .with_min_inner_size([900.0, 600.0]),
+        ),
         ..Default::default()
     };
     eframe::run_native(

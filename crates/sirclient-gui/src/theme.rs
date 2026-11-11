@@ -19,6 +19,8 @@ pub const WARN: Color32 = Color32::from_rgb(0xFB, 0xBF, 0x24);
 pub const BT: Color32 = Color32::from_rgb(0xD2, 0xB8, 0xFF);
 
 pub fn apply(ctx: &egui::Context) {
+    // Always dark, even when the OS is in light mode.
+    ctx.set_theme(egui::Theme::Dark);
     let mut v = Visuals::dark();
     v.panel_fill = BG;
     v.window_fill = SURFACE;

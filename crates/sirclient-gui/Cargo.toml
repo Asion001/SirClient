@@ -25,3 +25,7 @@ env_logger.workspace = true
 crossbeam-channel.workspace = true
 sys-locale = "0.3"
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(windows)'.dependencies]
+# Same winit eframe uses; only for the DWM title bar colour.
+winit = { version = "0.30", default-features = false }

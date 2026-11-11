@@ -197,6 +197,7 @@ impl App {
         shots: Option<std::path::PathBuf>,
     ) -> Self {
         apply(&cc.egui_ctx);
+        crate::chrome::init(cc);
         let lang = cc.storage.and_then(|s| s.get_string("language"));
         i18n::init(lang.as_deref());
         let ctx = cc.egui_ctx.clone();
@@ -974,7 +975,12 @@ impl eframe::App for App {
             .frame(
                 egui::Frame::new()
                     .fill(SURFACE)
-                    .inner_margin(egui::Margin::symmetric(14, 16))
+                    .inner_margin(egui::Margin {
+                        left: 14,
+                        right: 14,
+                        top: 16 + crate::chrome::TITLEBAR_H as i8,
+                        bottom: 16,
+                    })
                     .stroke(egui::Stroke::new(1.0, BORDER)),
             )
             .show(ui, |ui| self.sidebar(ui));
@@ -983,7 +989,7 @@ impl eframe::App for App {
             .frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin {
                 left: 28,
                 right: 28,
-                top: 22,
+                top: 22 + (crate::chrome::TITLEBAR_H * 0.5) as i8,
                 bottom: 22,
             }))
             .show(ui, |ui| {
@@ -1037,6 +1043,7 @@ impl eframe::App for App {
                         }
                     });
             });
+        crate::chrome::title_bar_drag(ui);
         self.toasts_ui(ui);
         self.screenshots(ui.ctx());
     }
