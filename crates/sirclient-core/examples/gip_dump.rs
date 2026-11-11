@@ -8,13 +8,13 @@ fn main() {
     use std::time::{Duration, Instant};
 
     use sirclient_core::gip::GipLink;
-    use sirclient_core::session::{Event, Request, Session};
+    use sirclient_core::session::{Event, Session};
 
     env_logger::init();
     let link = GipLink::open().expect("open G7 Pro XBox");
     println!("opened {}", link.path());
+    // The session reads everything on start.
     let s = Session::spawn(Box::new(link), Arc::new(|| {}));
-    s.send(Request::Reload);
     let end = Instant::now() + Duration::from_secs(10);
     let mut slots = 0;
     while Instant::now() < end && slots < 6 {

@@ -87,14 +87,6 @@ impl Slot {
         }
     }
 
-    #[allow(clippy::len_without_is_empty)]
-    pub fn len(self) -> usize {
-        match self {
-            Slot::Light => LIGHT_PROFILE_LEN,
-            _ => PROFILE_LEN,
-        }
-    }
-
     pub fn label(self) -> String {
         match self {
             Slot::Profile(n) => format!("Profile {n}"),
@@ -250,7 +242,8 @@ pub enum CalibrationPart {
     Motion,
 }
 
-/// Start (`kind = 1`) or finish (`kind = 2`) calibration of the given parts.
+/// Calibrate the given parts: `kind` 0 starts, 1 finishes (saves) and
+/// 2 exits without saving.
 /// The mode the firmware is in comes back in the state report.
 pub fn calibrate(kind: u8, part: CalibrationPart) -> Vec<u8> {
     let mask = match part {

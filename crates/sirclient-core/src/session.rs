@@ -272,13 +272,15 @@ impl Worker {
                     )));
                     return true;
                 }
-                let old = self
-                    .cache
-                    .get(&slot.number())
-                    .cloned()
-                    .unwrap_or_else(|| vec![0; slot_len]);
-                let first = (0..new.len()).find(|&i| new[i] != old[i]);
-                let last = (0..new.len()).rev().find(|&i| new[i] != old[i]);
+                // Only the changed range is sent. Without a cached copy of
+                // the slot there is nothing to diff against, so all of it is.
+                let (first, last) = match self.cache.get(&slot.number()) {
+                    Some(old) => (
+                        (0..new.len()).find(|&i| new[i] != old[i]),
+                        (0..new.len()).rev().find(|&i| new[i] != old[i]),
+                    ),
+                    None => (Some(0), Some(new.len() - 1)),
+                };
                 if let (Some(a), Some(b)) = (first, last) {
                     log::debug!("write {} [{a:#x}..={b:#x}]", slot.label());
                     let cmds = commands::write_range_in(self.geo, slot, a, &new[a..=b]);

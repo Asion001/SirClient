@@ -157,6 +157,10 @@ pub fn show(ui: &mut Ui, app: &mut App) {
                         ui.label(RichText::new(txt).color(col));
                         ui.label(RichText::new(role(d)).color(MUTED));
                         ui.horizontal(|ui| {
+                            // Raw-USB (GIP) devices are not HID: nothing to probe.
+                            if sirclient_core::gip::is_gip_path(&d.path) {
+                                return;
+                            }
                             let busy = app.probe.running;
                             if ui
                                 .add_enabled(!busy, egui::Button::new(t("probe-listen")))

@@ -229,7 +229,9 @@ impl crate::session::Link for MockG7 {
                 } else {
                     reply::REFRESH_PROFILE
                 };
-                if let Some(data) = self.slots.get(&slot) {
+                if let Some(data) = self.slots.get(&slot)
+                    && off <= data.len()
+                {
                     let end = (off + len).min(data.len());
                     let mut p = vec![code, slot, r[3], r[4], (end - off) as u8];
                     p.extend_from_slice(&data[off..end]);
@@ -240,7 +242,9 @@ impl crate::session::Link for MockG7 {
                 let slot = r[2];
                 let off = ((r[3] as usize) << 8) | r[4] as usize;
                 let len = r[5] as usize;
-                if let Some(data) = self.slots.get_mut(&slot) {
+                if let Some(data) = self.slots.get_mut(&slot)
+                    && off <= data.len()
+                {
                     let end = (off + len).min(data.len()).min(off + r.len() - 6);
                     data[off..end].copy_from_slice(&r[6..6 + (end - off)]);
                 }

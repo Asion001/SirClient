@@ -61,7 +61,10 @@ pub fn show(ui: &mut Ui, c: &mut Connected, slot: Slot, st: &mut UiState) {
                 ui.set_width(ui.available_width());
                 caption(ui, t("stat-battery"));
                 let (lvl, charging) = battery.unwrap_or((0, 0));
-                let mut v = format!("{lvl}%");
+                let mut v = match battery {
+                    Some(_) => format!("{lvl}%"),
+                    None => "—".into(),
+                };
                 if charging != 0 {
                     v.push_str(" · ");
                     v.push_str(&t("stat-charging"));
@@ -90,6 +93,13 @@ pub fn show(ui: &mut Ui, c: &mut Connected, slot: Slot, st: &mut UiState) {
             });
         }
     });
+
+    // The XBox edition has no live state report and its rumble and
+    // calibration commands are not known yet: don't send 8K commands to it.
+    if c.xbox {
+        super::xbox_notice(ui);
+        return;
+    }
 
     super::columns(ui, 2, 420.0, |i, ui| {
         if i == 0 {

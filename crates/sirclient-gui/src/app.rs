@@ -354,9 +354,14 @@ impl App {
                 Err(e) => self.hid_error = Some(e),
             }
             self.scanned = true;
-            // Drop a connection whose device went away.
+            // Drop a connection whose device went away. A scan that started
+            // before the connection was opened can miss it (the XBox edition
+            // re-enumerates under a new path when it is reset out of its HID
+            // fallback), so give a new connection a few seconds; a device
+            // that really disappears also ends the session with a read error.
             if let Some(c) = &self.conn
                 && !c.is_mock()
+                && c.connected_at.elapsed() > Duration::from_secs(4)
                 && !self.all_hid.iter().any(|d| d.path == c.id)
             {
                 self.conn = None;
